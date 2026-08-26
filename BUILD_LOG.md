@@ -1,5 +1,17 @@
 # Build Log
 
+## 2026-08-26 - Repair the work-item reference resolver
+
+Work items failed at `reference_resolution` for every reference. Three separate causes, none related to the git swap - this subsystem is untouched by it, so the resolver presumably worked against an older Claude Code whose permission model differed.
+
+`--permission-mode dontAsk` denies MCP tools outright. It ignores `--allowedTools` in all three forms (exact `mcp__server__tool`, server-level `mcp__server`, and glob `mcp__server__*`), ignores a `permissions.allow` rule passed via `--settings`, and behaves the same whether the server comes from `--mcp-config` under `--strict-mcp-config` or from the user's own registration with settings sources enabled. All six combinations were verified to fail and `auto` verified to succeed, so the resolver now runs under `auto`. That is not `bypassPermissions`: the narrow `--allowedTools` allowlist still applies, unsafe actions are still refused, and `createToolInspector` still aborts the resolve on any tool outside the allowlist.
+
+`--tools ''` prevented the resolver from loading the MCP tool at all. With deferred tool loading the model must call `ToolSearch` to fetch a tool's schema before invoking it, and passing `--tools` in any form - empty or naming the MCP tool - makes the subsequent MCP call fail. The flag is gone; the allowlist was always the real restriction.
+
+That exposed the third cause: `ToolSearch` is a `tool_use` block like any other, so `createToolInspector` aborted with `resolver_tool_violation`. It now sits alongside `StructuredOutput` in an internal-mechanisms set, since it only loads schemas and whatever tool it loads is still checked against the allowlist.
+
+Verified end-to-end against a real Linear reference: resolution returned the issue's title and summary, selected exactly one of three candidate repositories (correctly, the one the issue concerns), created the worktree from `refs/remotes/upstream/main`, generated the parent AGENTS.md/CLAUDE.md/TASK.json, and left the agent unstarted. Destroying it removed the worktree and root directory and preserved the branch, which is the documented policy.
+
 ## 2026-08-26 - Stop assuming `origin` is the canonical remote
 
 Two follow-ups to the git swap, both found while configuring a real multi-repo setup where one checkout (`chainguard-dev/mono`) is a fork: `origin` is the personal fork and the canonical repo sits under `upstream`.
