@@ -1,5 +1,13 @@
 # Build Log
 
+## 2026-08-26 - Revert the git-worktree/gh-stack swap, back to jj
+
+Reverted the workspace layer to Jujutsu, undoing the git-worktree/gh-stack refactor and its `origin`-assumption follow-up. The goal is a baseline that tracks Julian's upstream work from our own fork, and carrying a rewritten workspace layer put us on a divergent branch of the codebase that every future upstream pull would have to be reconciled against. Staying on jj keeps the diff against upstream small enough that following along stays cheap.
+
+Two reverts, of the PR #1 and PR #2 merges. The work-item reference resolver fix from PR #3 is deliberately kept - it deals with Claude Code's permission model and never touched the workspace layer, so it survives the revert unchanged. The tree is now identical to the pre-refactor commit except for that fix.
+
+`jj` is a required tool again. Four workspace tests fail with `spawnSync jj ENOENT` on a machine without it; that is a missing dependency, not a regression.
+
 ## 2026-08-26 - Repair the work-item reference resolver
 
 Work items failed at `reference_resolution` for every reference. Three separate causes, none related to the git swap - this subsystem is untouched by it, so the resolver presumably worked against an older Claude Code whose permission model differed.
