@@ -74,7 +74,7 @@ export async function startServer(options = {}) {
   setCurrentConfig(config);
   initDb(config.db_path);
 
-  const interruptedWorkspaces = await recoverInterruptedWorkspaceOperations(config);
+  const interruptedWorkspaces = recoverInterruptedWorkspaceOperations();
   if (interruptedWorkspaces.length > 0) {
     console.warn(`[claude-patrol] Recovered ${interruptedWorkspaces.length} interrupted workspace operation(s)`);
   }

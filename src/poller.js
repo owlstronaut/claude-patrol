@@ -996,9 +996,9 @@ let adoptWorkspaceStmt = null;
 
 /**
  * Adopt scratch workspaces that match newly-synced PRs.
- * A scratch workspace is adopted when its branch matches a PR's branch
+ * A scratch workspace is adopted when its bookmark matches a PR's branch
  * and its repo column matches the PR's org/repo. Also handles prefix
- * mismatches (e.g. branch "my-branch" matches PR branch "user/my-branch").
+ * mismatches (e.g. bookmark "my-branch" matches PR branch "user/my-branch").
  */
 function adoptScratchWorkspaces() {
   const db = getDb();
@@ -1018,13 +1018,13 @@ function adoptScratchWorkspaces() {
     if (!ws.repo) continue;
     const [org, repo] = ws.repo.split('/');
     // Exact match first, then suffix match (handles user/ prefixes on branches)
-    const pr = findPrByBranchStmt.get(org, repo, ws.branch) || findPrByBranchSuffixStmt.get(org, repo, ws.branch);
+    const pr = findPrByBranchStmt.get(org, repo, ws.bookmark) || findPrByBranchSuffixStmt.get(org, repo, ws.bookmark);
     if (pr) {
       adoptWorkspaceStmt.run(pr.id, ws.id);
       adopted++;
       console.log(`[poller] Adopted workspace ${ws.name} for PR ${pr.id}`);
     } else {
-      console.log(`[poller] No PR match for scratch workspace ${ws.name} (repo=${ws.repo}, branch=${ws.branch})`);
+      console.log(`[poller] No PR match for scratch workspace ${ws.name} (repo=${ws.repo}, bookmark=${ws.bookmark})`);
     }
   }
   if (adopted > 0) {

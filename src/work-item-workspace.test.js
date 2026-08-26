@@ -17,27 +17,10 @@ afterEach(() => {
 
 function createSource(path) {
   mkdirSync(path, { recursive: true });
-  const run = (...args) => execFileSync('git', args, { cwd: path, stdio: 'ignore' });
-  run('init', '--initial-branch=main');
-  run('config', 'user.email', 'patrol@example.test');
-  run('config', 'user.name', 'Patrol Test');
-  // A signing key in the developer's global config would block this commit.
-  run('config', 'commit.gpgsign', 'false');
-  run('commit', '--allow-empty', '-m', 'initial');
-  // Configured revisions are remote-tracking refs; fake one so the fixture
-  // does not need a real remote.
-  run('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  execFileSync('jj', ['git', 'init', '--colocate', path], { stdio: 'ignore' });
 }
 
-function worktreeList(source) {
-  return execFileSync('git', ['worktree', 'list'], { cwd: source, encoding: 'utf8' });
-}
-
-function branchList(source) {
-  return execFileSync('git', ['branch', '--list'], { cwd: source, encoding: 'utf8' });
-}
-
-test('work-item children are independent git worktrees under one non-repository parent', async () => {
+test('work-item children are independent jj workspaces under one non-repository parent', async () => {
   initDb(':memory:');
   const root = mkdtempSync(join(tmpdir(), 'patrol-work-item-workspaces-'));
   temporaryDirectories.push(root);
@@ -62,11 +45,11 @@ test('work-item children are independent git worktrees under one non-repository 
     workspace_base_path: join(root, 'workspaces'),
     symlink_memory: false,
     repos: {
-      'acme/alpha': { defaultRevision: 'refs/remotes/origin/main' },
-      'acme/beta': { defaultRevision: 'refs/remotes/origin/main' },
+      'acme/alpha': { defaultRevision: '@' },
+      'acme/beta': { defaultRevision: '@' },
     },
   };
-  const branch = 'patrol/work-item-item1';
+  const bookmark = 'patrol/work-item-item1';
   const children = [
     { id: 'child-alpha', repo: 'acme/alpha', name: 'item-alpha', path: join(parent, 'repos', 'alpha') },
     { id: 'child-beta', repo: 'acme/beta', name: 'item-beta', path: join(parent, 'repos', 'beta') },
@@ -79,20 +62,24 @@ test('work-item children are independent git worktrees under one non-repository 
       repo: child.repo,
       name: child.name,
       workspacePath: child.path,
-      branch,
+      bookmark,
       config,
     });
   }
 
-  // A linked worktree carries a .git file pointing back at its source repo, so
-  // each child is a repository root while the parent stays a plain directory.
-  assert.equal(existsSync(join(parent, '.git')), false);
-  assert.equal(existsSync(join(children[0].path, '.git')), true);
-  assert.equal(existsSync(join(children[1].path, '.git')), true);
-  assert.match(worktreeList(alphaSource), /repos\/alpha/);
-  assert.match(worktreeList(betaSource), /repos\/beta/);
-  assert.match(branchList(alphaSource), /patrol\/work-item-item1/);
-  assert.match(branchList(betaSource), /patrol\/work-item-item1/);
+  assert.equal(existsSync(join(parent, '.jj')), false);
+  assert.equal(existsSync(join(children[0].path, '.jj')), true);
+  assert.equal(existsSync(join(children[1].path, '.jj')), true);
+  assert.match(execFileSync('jj', ['workspace', 'list', '-R', alphaSource], { encoding: 'utf8' }), /item-alpha/);
+  assert.match(execFileSync('jj', ['workspace', 'list', '-R', betaSource], { encoding: 'utf8' }), /item-beta/);
+  assert.match(
+    execFileSync('jj', ['bookmark', 'list', bookmark, '-R', alphaSource], { encoding: 'utf8' }),
+    /patrol\/work-item-item1/,
+  );
+  assert.match(
+    execFileSync('jj', ['bookmark', 'list', bookmark, '-R', betaSource], { encoding: 'utf8' }),
+    /patrol\/work-item-item1/,
+  );
   assert.deepEqual(
     getDb()
       .prepare('SELECT repo, operation_state FROM workspaces ORDER BY repo')
@@ -107,33 +94,40 @@ test('work-item children are independent git worktrees under one non-repository 
 
   await assert.rejects(
     destroyWorkItemChild(children[0].id, config, {
-      deleteBranch: false,
+      deleteBookmark: false,
       runExec: async (command, args, options) => {
-        if (command === 'git' && args[0] === 'worktree' && args[1] === 'remove') {
-          const error = new Error('injected worktree remove failure');
+        if (command === 'jj' && args[0] === 'workspace' && args[1] === 'forget') {
+          const error = new Error('injected forget failure');
           error.code = 'injected_failure';
           throw error;
         }
         return execFile(command, args, options);
       },
     }),
-    (error) => error.code === 'workspace_remove_failed',
+    (error) => error.code === 'workspace_forget_failed',
   );
   assert.equal(existsSync(children[0].path), true);
-  assert.match(worktreeList(alphaSource), /repos\/alpha/);
+  assert.match(execFileSync('jj', ['workspace', 'list', '-R', alphaSource], { encoding: 'utf8' }), /item-alpha/);
   assert.deepEqual(
     {
       ...getDb().prepare('SELECT operation_state, operation_step FROM workspaces WHERE id = ?').get(children[0].id),
     },
-    { operation_state: 'error', operation_step: 'destroy:remove_worktree' },
+    { operation_state: 'error', operation_step: 'destroy:forget_workspace' },
   );
 
-  await destroyWorkItemChild(children[0].id, config, { deleteBranch: true });
-  await destroyWorkItemChild(children[1].id, config, { deleteBranch: false });
+  execFileSync('jj', ['bookmark', 'delete', bookmark, '-R', alphaSource]);
+  await destroyWorkItemChild(children[0].id, config, { deleteBookmark: true });
+  await destroyWorkItemChild(children[1].id, config, { deleteBookmark: false });
   assert.equal(existsSync(children[0].path), false);
   assert.equal(existsSync(children[1].path), false);
-  assert.doesNotMatch(worktreeList(alphaSource), /repos\/alpha/);
-  assert.doesNotMatch(worktreeList(betaSource), /repos\/beta/);
-  assert.doesNotMatch(branchList(alphaSource), /patrol\/work-item-item1/);
-  assert.match(branchList(betaSource), /patrol\/work-item-item1/);
+  assert.doesNotMatch(execFileSync('jj', ['workspace', 'list', '-R', alphaSource], { encoding: 'utf8' }), /item-alpha/);
+  assert.doesNotMatch(execFileSync('jj', ['workspace', 'list', '-R', betaSource], { encoding: 'utf8' }), /item-beta/);
+  assert.doesNotMatch(
+    execFileSync('jj', ['bookmark', 'list', bookmark, '-R', alphaSource], { encoding: 'utf8' }),
+    /patrol\/work-item-item1/,
+  );
+  assert.match(
+    execFileSync('jj', ['bookmark', 'list', bookmark, '-R', betaSource], { encoding: 'utf8' }),
+    /patrol\/work-item-item1/,
+  );
 });

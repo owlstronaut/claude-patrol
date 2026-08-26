@@ -1,6 +1,6 @@
 /** Schema v7 intentionally resets every pre-v7 database. */
 
-export const CURRENT_SCHEMA_VERSION = 13;
+export const CURRENT_SCHEMA_VERSION = 12;
 
 function createWorkItemTables(db) {
   db.exec(`
@@ -30,31 +30,6 @@ function createWorkItemTables(db) {
     );
 
     CREATE INDEX idx_work_items_state ON work_items(state);
-  `);
-}
-
-function createSessionsTable(db) {
-  db.exec(`
-    CREATE TABLE sessions (
-      id TEXT PRIMARY KEY,
-      workspace_id TEXT REFERENCES workspaces(id),
-      work_item_id TEXT REFERENCES work_items(id),
-      name TEXT,
-      pid INTEGER,
-      provider TEXT NOT NULL DEFAULT 'claude' CHECK(provider IN ('claude', 'codex')),
-      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'detached', 'killed')),
-      started_at TEXT NOT NULL,
-      ended_at TEXT,
-      claude_project_dir TEXT,
-      transcript_path TEXT,
-      CHECK(NOT (workspace_id IS NOT NULL AND work_item_id IS NOT NULL))
-    );
-
-    CREATE INDEX idx_sessions_workspace ON sessions(workspace_id);
-    CREATE INDEX idx_sessions_work_item ON sessions(work_item_id);
-    CREATE UNIQUE INDEX idx_sessions_live_work_item
-      ON sessions(work_item_id)
-      WHERE work_item_id IS NOT NULL AND status IN ('active', 'detached');
   `);
 }
 
@@ -90,6 +65,27 @@ function createWorkspaceTablesV9(db) {
       ON workspaces(work_item_id, repo)
       WHERE work_item_id IS NOT NULL AND status = 'active';
 
+    CREATE TABLE sessions (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT REFERENCES workspaces(id),
+      work_item_id TEXT REFERENCES work_items(id),
+      name TEXT,
+      pid INTEGER,
+      provider TEXT NOT NULL DEFAULT 'claude' CHECK(provider IN ('claude', 'codex')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'detached', 'killed')),
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      claude_project_dir TEXT,
+      transcript_path TEXT,
+      CHECK(NOT (workspace_id IS NOT NULL AND work_item_id IS NOT NULL))
+    );
+
+    CREATE INDEX idx_sessions_workspace ON sessions(workspace_id);
+    CREATE INDEX idx_sessions_work_item ON sessions(work_item_id);
+    CREATE UNIQUE INDEX idx_sessions_live_work_item
+      ON sessions(work_item_id)
+      WHERE work_item_id IS NOT NULL AND status IN ('active', 'detached');
+
     CREATE TABLE workspace_claims (
       repo TEXT NOT NULL,
       bookmark TEXT NOT NULL,
@@ -98,69 +94,6 @@ function createWorkspaceTablesV9(db) {
       created_at TEXT NOT NULL,
       PRIMARY KEY (repo, bookmark)
     );
-  `);
-  createSessionsTable(db);
-}
-
-function createWorkspaceTablesV13(db) {
-  db.exec(`
-    CREATE TABLE workspaces (
-      id TEXT PRIMARY KEY,
-      pr_id TEXT REFERENCES prs(id),
-      work_item_id TEXT REFERENCES work_items(id),
-      name TEXT NOT NULL,
-      path TEXT NOT NULL,
-      branch TEXT NOT NULL,
-      repo TEXT,
-      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'destroyed')),
-      created_at TEXT NOT NULL,
-      destroyed_at TEXT,
-      operation_state TEXT NOT NULL DEFAULT 'ready',
-      operation_step TEXT,
-      operation_error TEXT,
-      operation_updated_at TEXT,
-      start_revision TEXT,
-      base_commit TEXT,
-      setup_warnings_json JSON,
-      CHECK(NOT (pr_id IS NOT NULL AND work_item_id IS NOT NULL))
-    );
-
-    CREATE INDEX idx_workspaces_pr ON workspaces(pr_id);
-    CREATE INDEX idx_workspaces_work_item ON workspaces(work_item_id);
-    CREATE INDEX idx_workspaces_operation_state ON workspaces(operation_state);
-    CREATE UNIQUE INDEX idx_workspaces_active_pr
-      ON workspaces(pr_id) WHERE status = 'active';
-    CREATE UNIQUE INDEX idx_workspaces_active_work_item_repo
-      ON workspaces(work_item_id, repo)
-      WHERE work_item_id IS NOT NULL AND status = 'active';
-
-    CREATE TABLE workspace_claims (
-      repo TEXT NOT NULL,
-      branch TEXT NOT NULL,
-      workspace_id TEXT NOT NULL UNIQUE REFERENCES workspaces(id),
-      operation TEXT NOT NULL CHECK(operation IN ('create', 'destroy')),
-      created_at TEXT NOT NULL,
-      PRIMARY KEY (repo, branch)
-    );
-  `);
-}
-
-/**
- * Rename the `bookmark` column to `branch` on workspaces and workspace_claims.
- * A table rebuild would repoint sessions.workspace_id at the temporary table
- * and break the foreign key, so rename the column in place instead. No-op if
- * already renamed.
- */
-function migrateV12ToV13(db) {
-  const hasBookmark = db
-    .prepare("PRAGMA table_info('workspaces')")
-    .all()
-    .some((column) => column.name === 'bookmark');
-  if (!hasBookmark) return;
-
-  db.exec(`
-    ALTER TABLE workspaces RENAME COLUMN bookmark TO branch;
-    ALTER TABLE workspace_claims RENAME COLUMN bookmark TO branch;
   `);
 }
 
@@ -310,8 +243,7 @@ function resetSchema(db) {
       ON automation_jobs(dedupe_key) WHERE dedupe_key IS NOT NULL;
   `);
   createWorkItemTables(db);
-  createWorkspaceTablesV13(db);
-  createSessionsTable(db);
+  createWorkspaceTablesV9(db);
   createWorkItemRepositoryAdditionTable(db);
   createWorkItemPullRequestTable(db);
 }
@@ -413,7 +345,6 @@ export function migrateDb(db) {
     addSessionNames(db);
     addPrHeadOid(db);
     createWorkItemPullRequestTable(db);
-    migrateV12ToV13(db);
     db.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
     db.exec('COMMIT');
     const kind = version < 7 ? 'Destructive schema reset' : 'Schema migration';

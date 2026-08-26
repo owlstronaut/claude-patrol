@@ -26,7 +26,7 @@ for (const { presenter, reviewer, tool } of MATRICES) {
     ).run(now, now, now);
     db.prepare(
       `INSERT INTO workspaces
-        (id, pr_id, name, path, branch, status, created_at, operation_state, operation_step, operation_updated_at)
+        (id, pr_id, name, path, bookmark, status, created_at, operation_state, operation_step, operation_updated_at)
        VALUES ('workspace-1', 'acme/app#1', 'review', '/tmp/review', 'feature', 'active', ?, 'ready', 'create:complete', ?)`,
     ).run(now, now);
     db.prepare(

@@ -65,7 +65,7 @@ function detail() {
         state: 'ready',
         path: '/tmp/work-item/repos/alpha',
         checkout_available: true,
-        branch: 'patrol/work-item-123456789abc',
+        bookmark: 'patrol/work-item-123456789abc',
         start_revision: 'main@origin',
         base_commit: 'a'.repeat(64),
         warnings: [],
@@ -76,7 +76,7 @@ function detail() {
         state: 'pending',
         path: null,
         checkout_available: false,
-        branch: 'patrol/work-item-123456789abc',
+        bookmark: 'patrol/work-item-123456789abc',
         start_revision: 'main@origin',
         base_commit: null,
         warnings: [],
@@ -167,7 +167,7 @@ test('cleanup failure shows one retry, retained root, and copy feedback', async 
   failed.progress = { current: 1, total: 2 };
   failed.error = {
     code: 'cleanup_failed',
-    detail: 'git worktree remove failed',
+    detail: 'jj workspace forget failed',
     failed_provider: null,
     retry_action: 'cleanup',
     recovery_actions: [{ kind: 'command', label: 'Authenticate Codex', command: 'codex login' }],
@@ -185,7 +185,7 @@ test('cleanup failure shows one retry, retained root, and copy feedback', async 
   assert.ok(await screen.findByRole('button', { name: 'Copied' }));
 });
 
-test('destroy uses the branch-preservation confirmation and keeps request failures inline', async () => {
+test('destroy uses the bookmark-preservation confirmation and keeps request failures inline', async () => {
   const user = userEvent.setup();
   const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
   api.destroyWorkItem.mockRejectedValue(new Error('cleanup request rejected'));
@@ -195,7 +195,7 @@ test('destroy uses the branch-preservation confirmation and keeps request failur
 
   assert.equal(
     confirm.mock.calls[0][0],
-    'Remove 1 checkout directories and their git worktrees. Patrol will leave repository branches and commits in the source repositories.',
+    'Remove 1 checkout directories and their jj workspace registrations. Patrol will leave repository bookmarks and commits in the source repositories.',
   );
   assert.ok(await screen.findByRole('alert'));
   assert.ok(screen.getByText('cleanup request rejected'));

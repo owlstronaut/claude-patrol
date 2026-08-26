@@ -43,7 +43,7 @@ function fuzzyMatchPR(query, pr) {
  */
 function fuzzyMatchWorkspace(query, ws) {
   if (!query) return { match: true, score: 0 };
-  const haystack = `${ws.branch} ${ws.repo || ''} scratch workspace`.toLowerCase();
+  const haystack = `${ws.bookmark} ${ws.repo || ''} scratch workspace`.toLowerCase();
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
 
   let score = 0;
@@ -386,7 +386,7 @@ function GlobalResult({ session }) {
 function WorkspaceResult({ ws, sessionState, dismissed }) {
   return (
     <Stack direction="col" gap={1} className={styles.resultInfo}>
-      <div className={styles.resultTitle}>{ws.branch}</div>
+      <div className={styles.resultTitle}>{ws.bookmark}</div>
       <Stack gap={2} className={styles.resultMeta}>
         {ws.repo && <span className={styles.resultRepo}>{ws.repo}</span>}
       </Stack>

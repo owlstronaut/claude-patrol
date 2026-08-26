@@ -138,10 +138,10 @@ export function WorkspaceDetail({ workspaceId, onBack, workspaceStates }) {
                 )}
               </Stack>
             </Stack>
-            <div className={styles.title}>{workspace.branch}</div>
+            <div className={styles.title}>{workspace.bookmark}</div>
             <Stack gap={2} wrap className={shared.identityRow}>
               {workspace.repo && <span className={shared.repoTag}>{workspace.repo}</span>}
-              <span className={shared.branchTag}>{workspace.branch}</span>
+              <span className={shared.branchTag}>{workspace.bookmark}</span>
               <span className={shared.separator}>-</span>
               <span className={shared.updatedText}>Created {getRelativeTime(workspace.created_at)}</span>
               {workspace.status === 'destroyed' && <Badge color="red">Destroyed</Badge>}
@@ -162,7 +162,7 @@ export function WorkspaceDetail({ workspaceId, onBack, workspaceStates }) {
           (session ? (
             <TerminalCard
               session={session}
-              title={`Terminal - ${workspace.branch}`}
+              title={`Terminal - ${workspace.bookmark}`}
               onKill={handleKillSession}
               onExit={handleSessionExit}
               onReattach={handleReattach}

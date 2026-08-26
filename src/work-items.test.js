@@ -7,7 +7,7 @@ import { afterEach, test } from 'node:test';
 import { closeDb, getDb, initDb } from './db.js';
 import {
   createWorkItemService,
-  deterministicBranch,
+  deterministicBookmark,
   recoverInterruptedWorkItems,
   removeWorkItemRoot,
 } from './work-items.js';
@@ -33,8 +33,8 @@ function fixture({
     workspace_base_path: join(root, 'workspaces'),
     work_dir: join(root, 'sources'),
     repos: {
-      'acme/alpha': { defaultRevision: 'refs/remotes/origin/main' },
-      'acme/beta': { defaultRevision: 'refs/remotes/origin/main' },
+      'acme/alpha': { defaultRevision: 'main@origin' },
+      'acme/beta': { defaultRevision: 'main@origin' },
       'acme/gamma': {},
     },
     work_items: {
@@ -68,14 +68,23 @@ function fixture({
         repositories: ['acme/alpha', 'acme/beta'],
       }),
     },
-    createChild: async ({ id, workItemId, repo, name, workspacePath, branch, config: childConfig, startRevision }) => {
+    createChild: async ({
+      id,
+      workItemId,
+      repo,
+      name,
+      workspacePath,
+      bookmark,
+      config: childConfig,
+      startRevision,
+    }) => {
       if (repo === 'acme/beta' && addedRepositoryError) throw addedRepositoryError;
       mkdirSync(workspacePath, { recursive: true });
       const now = new Date().toISOString();
       getDb()
         .prepare(
           `INSERT INTO workspaces (
-            id, work_item_id, name, path, branch, repo, status, created_at,
+            id, work_item_id, name, path, bookmark, repo, status, created_at,
             operation_state, operation_step, operation_updated_at, start_revision,
             base_commit, setup_warnings_json
           ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, 'ready', 'create:complete', ?, ?, ?, '[]')`,
@@ -85,7 +94,7 @@ function fixture({
           workItemId,
           name,
           workspacePath,
-          branch,
+          bookmark,
           repo,
           now,
           now,
@@ -150,8 +159,8 @@ test('a two-repository item creates sibling children and waits for the root sess
   assert.equal(detail.stage, 'complete');
   assert.deepEqual(detail.repositories, ['acme/alpha', 'acme/beta']);
   assert.equal(detail.repository_workspaces.length, 2);
-  assert.equal(new Set(detail.repository_workspaces.map((child) => child.branch)).size, 1);
-  assert.equal(detail.repository_workspaces[0].branch, deterministicBranch(created.id));
+  assert.equal(new Set(detail.repository_workspaces.map((child) => child.bookmark)).size, 1);
+  assert.equal(detail.repository_workspaces[0].bookmark, deterministicBookmark(created.id));
   assert.equal(detail.has_session_history, false);
   assert.equal(sessionOptions.length, 0);
   assert.equal(getDb().prepare('SELECT COUNT(*) AS count FROM sessions WHERE workspace_id IS NOT NULL').get().count, 0);
@@ -268,7 +277,7 @@ test('a failed repository addition restores the ready work item and its root fil
   assert.equal(getDb().prepare('SELECT COUNT(*) AS count FROM work_item_repository_additions').get().count, 0);
 });
 
-test('destruction removes owned checkouts, preserves branch policy, and retains detail and history', async () => {
+test('destruction removes owned checkouts, preserves bookmark policy, and retains detail and history', async () => {
   const { service, childPolicies } = fixture();
   const created = service.create({ reference: 'PROJECT-1', workProvider: 'claude' });
   await service.waitForIdle(created.id);
@@ -293,7 +302,7 @@ test('destruction removes owned checkouts, preserves branch policy, and retains 
     0,
   );
   assert.deepEqual(
-    childPolicies.map((entry) => entry.deleteBranch),
+    childPolicies.map((entry) => entry.deleteBookmark),
     [false, false],
   );
   assert.equal(
@@ -527,12 +536,12 @@ test('startup requires partial child cleanup before preparation can retry', asyn
   getDb()
     .prepare(
       `INSERT INTO workspaces (
-        id, work_item_id, name, path, branch, repo, status, created_at,
+        id, work_item_id, name, path, bookmark, repo, status, created_at,
         operation_state, operation_step, operation_updated_at, start_revision,
         base_commit, setup_warnings_json
       ) VALUES ('partial-child', 'interrupted-child', 'partial-child', ?,
         'patrol/work-item-interrupted', 'acme/alpha', 'active', ?, 'error',
-        'create:add_workspace', ?, 'refs/remotes/origin/main', ?, '[]')`,
+        'create:add_workspace', ?, 'main@origin', ?, '[]')`,
     )
     .run(childPath, now, now, 'a'.repeat(64));
 
@@ -548,7 +557,7 @@ test('startup requires partial child cleanup before preparation can retry', asyn
   detail = service.detail('interrupted-child');
   assert.equal(detail.stage, 'child_creation');
   assert.equal(detail.error.retry_action, 'preparation');
-  assert.deepEqual(childPolicies, [{ repo: 'acme/alpha', deleteBranch: true }]);
+  assert.deepEqual(childPolicies, [{ repo: 'acme/alpha', deleteBookmark: true }]);
   assert.deepEqual(messages, [
     '[work-items] interrup child_compensation: resuming 1 workspace',
     '[work-items] interrup child_compensation: removing 1/1 acme/alpha',

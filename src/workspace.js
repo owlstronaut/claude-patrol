@@ -12,49 +12,26 @@ import { execFile, expandPath, toClaudeProjectKey } from './utils.js';
 import { getPullRequestOwner } from './work-item-prs.js';
 
 /**
- * Verify a repo directory exists and is a git repository. Patrol does not
- * clone repositories - the main checkout under work_dir must already exist.
+ * Ensure a git repo has jj initialized. If .jj/ doesn't exist, runs
+ * `jj git init --colocate` to set it up. No-op if already initialized.
  * @param {string} repoPath
  */
-function ensureRepoExists(repoPath) {
+async function ensureJjInit(repoPath) {
   if (!existsSync(repoPath)) {
     throw new Error(`Repo directory does not exist: ${repoPath}`);
   }
-  if (!existsSync(resolve(repoPath, '.git'))) {
-    throw workspaceError('git_required', `Configured repository is not a git repository: ${repoPath}`);
+  const jjDir = resolve(repoPath, '.jj');
+  if (!existsSync(jjDir)) {
+    console.log(`[workspace] Initializing jj in ${repoPath}`);
+    await execFile('jj', ['git', 'init', '--colocate'], { cwd: repoPath });
+    return;
   }
-}
 
-/**
- * Remove a git worktree registered against mainRepoPath, if one is present.
- * Checks `git worktree list` first instead of pattern-matching git's error
- * text, so a worktree that's already gone (or was never registered) is a
- * clean no-op rather than an error.
- * @param {typeof execFile} runExec
- * @param {string} mainRepoPath
- * @param {string} workspacePath
- */
-async function removeWorktree(runExec, mainRepoPath, workspacePath) {
-  const normalizedTarget = existsSync(workspacePath) ? realpathSync(workspacePath) : resolve(workspacePath);
-  const { stdout } = await runExec('git', ['worktree', 'list', '--porcelain'], {
-    cwd: mainRepoPath,
-    encoding: 'utf8',
-  });
-  const present = String(stdout)
-    .split('\n\n')
-    .some((block) => {
-      const firstLine = block.split('\n')[0] || '';
-      if (!firstLine.startsWith('worktree ')) return false;
-      const path = firstLine.slice('worktree '.length).trim();
-      return path === normalizedTarget || path === resolve(workspacePath);
-    });
-  if (!present) return;
+  // Update stale working copy - jj refuses operations on stale repos
   try {
-    // Double --force: a single --force skips the "has changes" check but not
-    // a locked worktree, which needs --force given twice.
-    await runExec('git', ['worktree', 'remove', '--force', '--force', workspacePath], { cwd: mainRepoPath });
-  } catch (err) {
-    if (!/is not a working tree/i.test(err.message)) throw err;
+    await execFile('jj', ['workspace', 'update-stale', '-R', repoPath]);
+  } catch {
+    // Non-fatal: update-stale fails if workspace isn't stale (exit code 1)
   }
 }
 
@@ -85,28 +62,28 @@ function reserveWorkspaceRow(workspace) {
     const conflict = db
       .prepare(
         `SELECT id FROM workspaces
-         WHERE repo = ? AND branch = ? AND status = 'active'
+         WHERE repo = ? AND bookmark = ? AND status = 'active'
          LIMIT 1`,
       )
-      .get(workspace.repo, workspace.branch);
+      .get(workspace.repo, workspace.bookmark);
     if (conflict) {
       throw workspaceError(
         'workspace_conflict',
-        `Active workspace ${conflict.id} already owns ${workspace.repo} branch ${workspace.branch}`,
+        `Active workspace ${conflict.id} already owns ${workspace.repo} bookmark ${workspace.bookmark}`,
       );
     }
     const claim = db
-      .prepare('SELECT workspace_id FROM workspace_claims WHERE repo = ? AND branch = ?')
-      .get(workspace.repo, workspace.branch);
+      .prepare('SELECT workspace_id FROM workspace_claims WHERE repo = ? AND bookmark = ?')
+      .get(workspace.repo, workspace.bookmark);
     if (claim) {
       throw workspaceError(
         'workspace_busy',
-        `Workspace operation ${claim.workspace_id} already owns ${workspace.repo} branch ${workspace.branch}`,
+        `Workspace operation ${claim.workspace_id} already owns ${workspace.repo} bookmark ${workspace.bookmark}`,
       );
     }
     db.prepare(
       `INSERT INTO workspaces (
-        id, pr_id, work_item_id, name, path, branch, repo, status, created_at,
+        id, pr_id, work_item_id, name, path, bookmark, repo, status, created_at,
         operation_state, operation_step, operation_updated_at, start_revision, base_commit,
         setup_warnings_json
       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, 'creating', 'create:reserved', ?, ?, ?, ?)`,
@@ -116,7 +93,7 @@ function reserveWorkspaceRow(workspace) {
       workspace.workItemId ?? null,
       workspace.name,
       workspace.path,
-      workspace.branch,
+      workspace.bookmark,
       workspace.repo,
       workspace.now,
       workspace.now,
@@ -125,9 +102,9 @@ function reserveWorkspaceRow(workspace) {
       JSON.stringify([]),
     );
     db.prepare(
-      `INSERT INTO workspace_claims (repo, branch, workspace_id, operation, created_at)
+      `INSERT INTO workspace_claims (repo, bookmark, workspace_id, operation, created_at)
        VALUES (?, ?, ?, 'create', ?)`,
-    ).run(workspace.repo, workspace.branch, workspace.id, workspace.now);
+    ).run(workspace.repo, workspace.bookmark, workspace.id, workspace.now);
   });
 }
 
@@ -143,21 +120,31 @@ function claimWorkspaceForDestroy(workspace) {
   const db = getDb();
   inTransaction(db, () => {
     const current = db
-      .prepare('SELECT workspace_id FROM workspace_claims WHERE repo = ? AND branch = ?')
-      .get(workspace.repo, workspace.branch);
+      .prepare('SELECT workspace_id FROM workspace_claims WHERE repo = ? AND bookmark = ?')
+      .get(workspace.repo, workspace.bookmark);
     if (current && current.workspace_id !== workspace.id) {
-      throw workspaceError('workspace_busy', `Another workspace operation owns ${workspace.repo} ${workspace.branch}`);
+      throw workspaceError(
+        'workspace_busy',
+        `Another workspace operation owns ${workspace.repo} ${workspace.bookmark}`,
+      );
     }
     if (!current) {
       db.prepare(
-        `INSERT INTO workspace_claims (repo, branch, workspace_id, operation, created_at)
+        `INSERT INTO workspace_claims (repo, bookmark, workspace_id, operation, created_at)
          VALUES (?, ?, ?, 'destroy', ?)`,
-      ).run(workspace.repo, workspace.branch, workspace.id, new Date().toISOString());
+      ).run(workspace.repo, workspace.bookmark, workspace.id, new Date().toISOString());
     } else {
       db.prepare("UPDATE workspace_claims SET operation = 'destroy' WHERE workspace_id = ?").run(workspace.id);
     }
     updateWorkspaceOperation(workspace.id, 'destroying', 'destroy:reserved');
   });
+}
+
+function isAlreadyForgotten(error) {
+  if (error?.code === 'ENOENT') return false;
+  return /no such workspace|no workspace named|workspace.*(?:not found|does not exist|unknown)/i.test(
+    error?.message ?? '',
+  );
 }
 
 function updateWorkspaceOperation(id, state, step, error = null, extra = {}) {
@@ -201,47 +188,15 @@ export function inspectWorkspaceState() {
   return issues;
 }
 
-/**
- * Convert abandoned process-owned operations into explicit retryable errors,
- * and prune stale git worktree registrations left behind by the crash. A
- * worktree directory removed out-of-band (or never fully registered) leaves
- * administrative records under `.git/worktrees/<name>/` that block reusing
- * the same branch/path until pruned.
- * @param {object} config - app config, used to resolve each repo's main path
- */
-export async function recoverInterruptedWorkspaceOperations(config) {
+/** Convert abandoned process-owned operations into explicit retryable errors. */
+export function recoverInterruptedWorkspaceOperations() {
   const db = getDb();
   const interrupted = db
     .prepare(
-      "SELECT id, repo, pr_id, operation_state, operation_step FROM workspaces WHERE operation_state IN ('creating', 'destroying')",
+      "SELECT id, operation_state, operation_step FROM workspaces WHERE operation_state IN ('creating', 'destroying')",
     )
     .all();
   if (interrupted.length === 0) return [];
-
-  const repoPaths = new Set();
-  for (const workspace of interrupted) {
-    try {
-      let repo = workspace.repo;
-      if (!repo && workspace.pr_id) {
-        const pr = db.prepare('SELECT org, repo FROM prs WHERE id = ?').get(workspace.pr_id);
-        if (pr) repo = `${pr.org}/${pr.repo}`;
-      }
-      if (repo) {
-        const [org, name] = repo.split('/');
-        repoPaths.add(resolve(expandPath(config.work_dir), org, name));
-      }
-    } catch {
-      /* best effort - DB cleanup below still proceeds regardless */
-    }
-  }
-  for (const repoPath of repoPaths) {
-    try {
-      await execFile('git', ['worktree', 'prune'], { cwd: repoPath });
-    } catch {
-      /* best effort - a missing/invalid repo path shouldn't block DB recovery */
-    }
-  }
-
   inTransaction(db, () => {
     const now = new Date().toISOString();
     const update = db.prepare(
@@ -265,9 +220,10 @@ export async function recoverInterruptedWorkspaceOperations(config) {
 /**
  * Serialize operations on a single workspace id. Without this, a destroy can
  * fire against a create that is still mid-flight: it marks the DB row
- * destroyed and runs `git worktree remove` before `git worktree add` has
- * finished, so git ends up owning an orphan worktree the DB no longer
- * tracks. Subsequent creates then fail with "already used by worktree at...".
+ * destroyed and runs `jj workspace forget` before `jj workspace add` has
+ * finished, so jj ends up owning an orphan workspace the DB no longer
+ * tracks. Subsequent creates then fail with `Workspace named ... already
+ * exists`.
  * @template T
  * @param {string} id
  * @param {() => Promise<T>} fn
@@ -296,7 +252,7 @@ async function withWorkspaceLock(id, fn) {
 }
 
 /**
- * Create a git worktree for a PR.
+ * Create a jj workspace for a PR.
  * Uses a transaction with unique constraint to prevent concurrent creation.
  * @param {string} prId - e.g. 'org/repo#42'
  * @param {object} config - app config
@@ -331,7 +287,7 @@ export async function createWorkspace(prId, config) {
       prId,
       name,
       path: workspacePath,
-      branch: pr.branch,
+      bookmark: pr.branch,
       repo: `${pr.org}/${pr.repo}`,
       now,
       startRevision: pr.branch,
@@ -351,15 +307,21 @@ export async function createWorkspace(prId, config) {
           context: { workspaceId: id, prId, repo: `${pr.org}/${pr.repo}` },
         },
         async () => {
-          updateWorkspaceOperation(id, 'creating', 'create:verify_repository');
-          ensureRepoExists(mainRepoPath);
-          updateWorkspaceOperation(id, 'creating', 'create:fetch');
-          await execFile('git', ['fetch', 'origin', pr.branch], { cwd: mainRepoPath });
+          updateWorkspaceOperation(id, 'creating', 'create:initialize_repository');
+          await ensureJjInit(mainRepoPath);
           mkdirSync(dirname(workspacePath), { recursive: true });
           updateWorkspaceOperation(id, 'creating', 'create:add_workspace');
-          await execFile('git', ['worktree', 'add', '-b', pr.branch, workspacePath, `origin/${pr.branch}`], {
-            cwd: mainRepoPath,
-          });
+          await execFile('jj', [
+            'workspace',
+            'add',
+            workspacePath,
+            '--name',
+            name,
+            '-r',
+            pr.branch,
+            '-R',
+            mainRepoPath,
+          ]);
           updateWorkspaceOperation(id, 'creating', 'create:post_setup');
           const warnings = await runPostCreateSetup(workspacePath, mainRepoPath, name, config, `${pr.org}/${pr.repo}`);
           const safeWarnings = sanitizeWorkspaceWarnings(warnings);
@@ -373,11 +335,12 @@ export async function createWorkspace(prId, config) {
     } catch (err) {
       await compensateWorkspaceCreation({
         id,
+        name,
         workspacePath,
         mainRepoPath,
         repo: `${pr.org}/${pr.repo}`,
         error: err,
-        deleteBranch: false,
+        deleteBookmark: false,
       });
       emitLocalChange();
       throw workspaceError('workspace_create_failed', `Workspace creation failed: ${sanitizePublicText(err.message)}`);
@@ -395,12 +358,7 @@ export async function createWorkspace(prId, config) {
  * @param {object} config - app config
  * @returns {Promise<object>} workspace record
  */
-export async function createScratchWorkspace(
-  repo,
-  branch,
-  config,
-  { startRevision = 'refs/remotes/origin/main' } = {},
-) {
+export async function createScratchWorkspace(repo, branch, config, { startRevision = 'main@origin' } = {}) {
   const db = getDb();
   const [org, repoName] = repo.split('/');
   if (!org || !repoName) {
@@ -419,7 +377,7 @@ export async function createScratchWorkspace(
     throw new Error(`Main repo does not exist: ${mainRepoPath}`);
   }
 
-  reserveWorkspaceRow({ id, name, path: workspacePath, branch, repo, now, startRevision });
+  reserveWorkspaceRow({ id, name, path: workspacePath, bookmark: branch, repo, now, startRevision });
 
   return withWorkspaceLock(id, async () => {
     try {
@@ -430,16 +388,32 @@ export async function createScratchWorkspace(
           context: { workspaceId: id, repo, branch },
         },
         async () => {
-          updateWorkspaceOperation(id, 'creating', 'create:verify_repository');
-          ensureRepoExists(mainRepoPath);
+          updateWorkspaceOperation(id, 'creating', 'create:initialize_repository');
+          await ensureJjInit(mainRepoPath);
           mkdirSync(dirname(workspacePath), { recursive: true });
           updateWorkspaceOperation(id, 'creating', 'create:add_workspace');
-          await execFile('git', ['worktree', 'add', '-b', branch, workspacePath, startRevision], {
-            cwd: mainRepoPath,
-          });
+          await execFile('jj', [
+            'workspace',
+            'add',
+            workspacePath,
+            '--name',
+            name,
+            '-r',
+            startRevision,
+            '-R',
+            mainRepoPath,
+          ]);
+
+          // Create bookmark for the branch (non-fatal - may already exist)
+          const warnings = [];
+          try {
+            await execFile('jj', ['bookmark', 'create', branch, '-R', workspacePath]);
+          } catch (err) {
+            warnings.push(`Bookmark create failed: ${err.message}`);
+          }
 
           updateWorkspaceOperation(id, 'creating', 'create:post_setup');
-          const warnings = await runPostCreateSetup(workspacePath, mainRepoPath, name, config, repo);
+          warnings.push(...(await runPostCreateSetup(workspacePath, mainRepoPath, name, config, repo)));
           const safeWarnings = sanitizeWorkspaceWarnings(warnings);
           db.prepare('UPDATE workspaces SET setup_warnings_json = ? WHERE id = ?').run(
             JSON.stringify(safeWarnings),
@@ -451,11 +425,12 @@ export async function createScratchWorkspace(
     } catch (err) {
       await compensateWorkspaceCreation({
         id,
+        name,
         workspacePath,
         mainRepoPath,
         repo,
         error: err,
-        deleteBranch: false,
+        deleteBookmark: false,
       });
       emitLocalChange();
       throw workspaceError('workspace_create_failed', `Workspace creation failed: ${sanitizePublicText(err.message)}`);
@@ -485,8 +460,8 @@ export function sourceRepositoryPath(repo, config) {
   ) {
     throw workspaceError('unsafe_repository_path', `Configured source repository escapes work_dir: ${repo}`);
   }
-  if (!existsSync(resolve(source, '.git'))) {
-    throw workspaceError('git_required', `Configured source repository is not a git repository: ${repo}`);
+  if (!existsSync(resolve(source, '.jj'))) {
+    throw workspaceError('jj_required', `Configured source repository is not a jj repository: ${repo}`);
   }
   return source;
 }
@@ -495,21 +470,27 @@ export async function resolveWorkspaceRevision(repo, revision, config) {
   const sourcePath = sourceRepositoryPath(repo, config);
   let stdout;
   try {
-    ({ stdout } = await execFile('git', ['rev-parse', '--verify', `${revision}^{commit}`], {
-      cwd: sourcePath,
-      encoding: 'utf8',
-    }));
+    ({ stdout } = await execFile(
+      'jj',
+      ['log', '--no-graph', '-r', revision, '-T', 'commit_id ++ "\\n"', '-R', sourcePath],
+      {
+        encoding: 'utf8',
+      },
+    ));
   } catch (error) {
     throw workspaceError(
       'revision_unresolved',
       sanitizePublicText(`Could not resolve configured revision for ${repo}: ${error.message}`),
     );
   }
-  const commitId = String(stdout).trim();
-  if (!/^[0-9a-f]{40,64}$/i.test(commitId)) {
-    throw workspaceError('revision_unresolved', `Configured revision for ${repo} did not resolve to a commit`);
+  const commits = String(stdout)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (commits.length !== 1 || !/^[0-9a-f]{40,64}$/i.test(commits[0])) {
+    throw workspaceError('revision_ambiguous', `Configured revision for ${repo} did not resolve to exactly one commit`);
   }
-  return { sourcePath, commitId };
+  return { sourcePath, commitId: commits[0] };
 }
 
 export async function createWorkItemChild({
@@ -518,7 +499,7 @@ export async function createWorkItemChild({
   repo,
   name,
   workspacePath,
-  branch,
+  bookmark,
   config,
   startRevision = config.repos[repo].defaultRevision,
 }) {
@@ -529,7 +510,7 @@ export async function createWorkItemChild({
     workItemId,
     name,
     path: workspacePath,
-    branch,
+    bookmark,
     repo,
     now,
     startRevision,
@@ -537,23 +518,22 @@ export async function createWorkItemChild({
   });
 
   return withWorkspaceLock(id, async () => {
-    let branchCreated = false;
+    let bookmarkCreated = false;
     try {
-      updateWorkspaceOperation(id, 'creating', 'create:check_branch');
-      let exists = true;
-      try {
-        await execFile('git', ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], { cwd: sourcePath });
-      } catch {
-        exists = false;
-      }
-      if (exists) {
-        throw workspaceError('branch_exists', `Branch already exists in ${repo}: ${branch}`);
+      updateWorkspaceOperation(id, 'creating', 'create:check_bookmark');
+      const { stdout } = await execFile('jj', ['bookmark', 'list', bookmark, '-T', 'name ++ "\\n"', '-R', sourcePath], {
+        encoding: 'utf8',
+      });
+      if (String(stdout).trim()) {
+        throw workspaceError('bookmark_exists', `Bookmark already exists in ${repo}: ${bookmark}`);
       }
 
       mkdirSync(dirname(workspacePath), { recursive: true });
       updateWorkspaceOperation(id, 'creating', 'create:add_workspace');
-      await execFile('git', ['worktree', 'add', '-b', branch, workspacePath, commitId], { cwd: sourcePath });
-      branchCreated = true;
+      await execFile('jj', ['workspace', 'add', workspacePath, '--name', name, '-r', commitId, '-R', sourcePath]);
+      updateWorkspaceOperation(id, 'creating', 'create:bookmark');
+      await execFile('jj', ['bookmark', 'create', bookmark, '-r', '@', '-R', workspacePath]);
+      bookmarkCreated = true;
       updateWorkspaceOperation(id, 'creating', 'create:post_setup');
       const warnings = sanitizeWorkspaceWarnings(
         await runPostCreateSetup(workspacePath, sourcePath, name, config, repo),
@@ -564,11 +544,12 @@ export async function createWorkItemChild({
     } catch (error) {
       await compensateWorkspaceCreation({
         id,
+        name,
         workspacePath,
         mainRepoPath: sourcePath,
         repo,
         error,
-        deleteBranch: branchCreated ? branch : false,
+        deleteBookmark: bookmarkCreated ? bookmark : false,
       });
       throw workspaceError(error.code ?? 'setup_failed', sanitizePublicText(error.message));
     }
@@ -576,7 +557,7 @@ export async function createWorkItemChild({
 }
 
 const COMPOSE_FILENAMES = new Set(['docker-compose.yml', 'docker-compose.yaml', 'compose.yml', 'compose.yaml']);
-const COMPOSE_SKIP_DIRS = new Set(['node_modules', '.git', '.next', 'dist', 'build']);
+const COMPOSE_SKIP_DIRS = new Set(['node_modules', '.git', '.jj', '.next', 'dist', 'build']);
 
 /**
  * Recursively find docker compose files under a workspace, skipping heavy or
@@ -700,11 +681,12 @@ export async function pruneStaleComposeStacks(workspaceBasePath) {
  * Best-effort: logs warnings but does not throw.
  * @param {object} opts
  * @param {string} opts.id - workspace DB id
+ * @param {string} opts.name - jj workspace name
  * @param {string} opts.workspacePath
  * @param {string} opts.mainRepoPath
  * @param {string} opts.repo
  */
-async function compensateWorkspaceCreation({ id, workspacePath, mainRepoPath, repo, error, deleteBranch }) {
+async function compensateWorkspaceCreation({ id, name, workspacePath, mainRepoPath, repo, error, deleteBookmark }) {
   const originalError = sanitizePublicText(error?.message ?? String(error));
   updateWorkspaceOperation(id, 'creating', 'create:compensation_docker', originalError);
 
@@ -721,17 +703,19 @@ async function compensateWorkspaceCreation({ id, workspacePath, mainRepoPath, re
     return false;
   }
 
-  updateWorkspaceOperation(id, 'creating', 'create:compensation_remove_worktree');
+  updateWorkspaceOperation(id, 'creating', 'create:compensation_forget');
   try {
-    await removeWorktree(execFile, mainRepoPath, workspacePath);
+    await execFile('jj', ['workspace', 'forget', name, '-R', mainRepoPath]);
   } catch (caught) {
-    finishWorkspaceOperation(
-      id,
-      'error',
-      'create:compensation_remove_worktree',
-      sanitizePublicText(`${originalError}; ${caught.message}`),
-    );
-    return false;
+    if (!isAlreadyForgotten(caught)) {
+      finishWorkspaceOperation(
+        id,
+        'error',
+        'create:compensation_forget',
+        sanitizePublicText(`${originalError}; ${caught.message}`),
+      );
+      return false;
+    }
   }
 
   updateWorkspaceOperation(id, 'creating', 'create:compensation_directory');
@@ -762,15 +746,15 @@ async function compensateWorkspaceCreation({ id, workspacePath, mainRepoPath, re
     return false;
   }
 
-  if (deleteBranch) {
-    updateWorkspaceOperation(id, 'creating', 'create:compensation_branch');
+  if (deleteBookmark) {
+    updateWorkspaceOperation(id, 'creating', 'create:compensation_bookmark');
     try {
-      await execFile('git', ['branch', '-D', deleteBranch], { cwd: mainRepoPath });
+      await execFile('jj', ['bookmark', 'delete', deleteBookmark, '-R', mainRepoPath]);
     } catch (caught) {
       finishWorkspaceOperation(
         id,
         'error',
-        'create:compensation_branch',
+        'create:compensation_bookmark',
         sanitizePublicText(`${originalError}; ${caught.message}`),
       );
       return false;
@@ -791,7 +775,7 @@ async function compensateWorkspaceCreation({ id, workspacePath, mainRepoPath, re
  * On failure, caller is responsible for rollback.
  * @param {string} workspacePath
  * @param {string} mainRepoPath
- * @param {string} name - workspace name (for log messages)
+ * @param {string} name - jj workspace name (for log messages)
  * @param {object} config
  * @param {string} repoKey - "org/repo" for config lookup
  */
@@ -871,7 +855,7 @@ function symlinkMemory(workspacePath, mainRepoPath) {
 }
 
 /**
- * Destroy a workspace - kill sessions, docker down, remove the git worktree, rm.
+ * Destroy a workspace - kill sessions, docker down, jj forget, rm.
  * @param {string} workspaceId
  * @param {object} config
  * @returns {Promise<{ok: boolean, warnings: string[]}>}
@@ -884,18 +868,18 @@ export async function destroyWorkspace(workspaceId, config) {
       'Work-item child workspaces can only be removed through their work item',
     );
   }
-  return destroyWorkspaceInternal(workspaceId, config, { deleteBranch: false });
+  return destroyWorkspaceInternal(workspaceId, config, { deleteBookmark: false });
 }
 
-export async function destroyWorkItemChild(workspaceId, config, { deleteBranch = false, runExec = execFile } = {}) {
-  return destroyWorkspaceInternal(workspaceId, config, { deleteBranch, runExec });
+export async function destroyWorkItemChild(workspaceId, config, { deleteBookmark = false, runExec = execFile } = {}) {
+  return destroyWorkspaceInternal(workspaceId, config, { deleteBookmark, runExec });
 }
 
-async function destroyWorkspaceInternal(workspaceId, config, { deleteBranch, runExec = execFile }) {
-  return withWorkspaceLock(workspaceId, () => destroyWorkspaceLocked(workspaceId, config, { deleteBranch, runExec }));
+async function destroyWorkspaceInternal(workspaceId, config, { deleteBookmark, runExec = execFile }) {
+  return withWorkspaceLock(workspaceId, () => destroyWorkspaceLocked(workspaceId, config, { deleteBookmark, runExec }));
 }
 
-async function destroyWorkspaceLocked(workspaceId, config, { deleteBranch, runExec }) {
+async function destroyWorkspaceLocked(workspaceId, config, { deleteBookmark, runExec }) {
   const db = getDb();
   const workspace = db.prepare('SELECT * FROM workspaces WHERE id = ?').get(workspaceId);
   if (!workspace) {
@@ -952,12 +936,14 @@ async function destroyWorkspaceLocked(workspaceId, config, { deleteBranch, runEx
         const dockerWarning = await dockerComposeDown(workspace.path);
         if (dockerWarning) throw workspaceError('docker_cleanup_failed', dockerWarning);
 
-        // Step 3: remove the git worktree
-        updateWorkspaceOperation(workspaceId, 'destroying', 'destroy:remove_worktree');
+        // Step 3: jj workspace forget
+        updateWorkspaceOperation(workspaceId, 'destroying', 'destroy:forget_workspace');
         try {
-          await removeWorktree(runExec, mainRepoPath, workspace.path);
+          await runExec('jj', ['workspace', 'forget', workspace.name, '-R', mainRepoPath]);
         } catch (err) {
-          throw workspaceError('workspace_remove_failed', `git worktree remove failed: ${err.message}`);
+          if (!isAlreadyForgotten(err)) {
+            throw workspaceError('workspace_forget_failed', `jj workspace forget failed: ${err.message}`);
+          }
         }
 
         // Step 4: Archive session transcripts before removing provider state.
@@ -976,7 +962,7 @@ async function destroyWorkspaceLocked(workspaceId, config, { deleteBranch, runEx
           }
         }
 
-        // Step 5: Remove the directory only after the worktree was removed.
+        // Step 5: Remove the directory only after jj forget succeeded.
         updateWorkspaceOperation(workspaceId, 'destroying', 'destroy:directory');
         try {
           await rm(workspace.path, { recursive: true, force: true });
@@ -995,22 +981,19 @@ async function destroyWorkspaceLocked(workspaceId, config, { deleteBranch, runEx
           throw workspaceError('provider_state_cleanup_failed', `Claude memory cleanup failed: ${err.message}`);
         }
 
-        if (deleteBranch) {
-          updateWorkspaceOperation(workspaceId, 'destroying', 'destroy:branch');
+        if (deleteBookmark) {
+          updateWorkspaceOperation(workspaceId, 'destroying', 'destroy:bookmark');
           try {
-            let exists = true;
-            try {
-              await runExec('git', ['show-ref', '--verify', '--quiet', `refs/heads/${workspace.branch}`], {
-                cwd: mainRepoPath,
-              });
-            } catch {
-              exists = false;
-            }
-            if (exists) {
-              await runExec('git', ['branch', '-D', workspace.branch], { cwd: mainRepoPath });
+            const { stdout } = await runExec(
+              'jj',
+              ['bookmark', 'list', workspace.bookmark, '-T', 'name ++ "\\n"', '-R', mainRepoPath],
+              { encoding: 'utf8' },
+            );
+            if (String(stdout).trim()) {
+              await runExec('jj', ['bookmark', 'delete', workspace.bookmark, '-R', mainRepoPath]);
             }
           } catch (error) {
-            throw workspaceError('branch_cleanup_failed', `Branch cleanup failed: ${error.message}`);
+            throw workspaceError('bookmark_cleanup_failed', `Bookmark cleanup failed: ${error.message}`);
           }
         }
 

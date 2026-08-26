@@ -20,23 +20,10 @@ function temporaryDirectory() {
   return directory;
 }
 
-function initGitRepo(path) {
-  const run = (...args) => execFileSync('git', args, { cwd: path, stdio: 'ignore' });
-  run('init', '--initial-branch=main');
-  run('config', 'user.email', 'patrol@example.test');
-  run('config', 'user.name', 'Patrol Test');
-  // A signing key in the developer's global config would block this commit.
-  run('config', 'commit.gpgsign', 'false');
-  run('commit', '--allow-empty', '-m', 'initial');
-  // Configured revisions are remote-tracking refs; fake one so the fixture
-  // does not need a real remote.
-  run('update-ref', 'refs/remotes/origin/main', 'HEAD');
-}
-
 function workItemConfig(overrides = {}) {
   return {
     poll: { orgs: [], repos: [] },
-    repos: { 'acme/widgets': { defaultRevision: 'refs/remotes/origin/main' } },
+    repos: { 'acme/widgets': { defaultRevision: 'main@origin' } },
     work_items: {
       repositories: ['acme/widgets'],
       resolver: {
@@ -142,7 +129,7 @@ test('work-item configuration rejects ambiguous repositories and unsafe resolver
       () =>
         parseConfig({
           ...workItemConfig(),
-          repos: { [repository]: { defaultRevision: 'refs/remotes/origin/main' } },
+          repos: { [repository]: { defaultRevision: 'main@origin' } },
           work_items: { ...workItemConfig().work_items, repositories: [repository] },
         }),
       /owner\/repo/,
@@ -175,32 +162,27 @@ test('provider setup keeps the resolver URL in one shell argument', () => {
   );
 });
 
-test('source repositories must be git repositories contained by work_dir', async () => {
+test('source repositories must be jj repositories contained by work_dir', async () => {
   const root = temporaryDirectory();
   const workDir = join(root, 'work');
   const repository = join(workDir, 'acme', 'widgets');
   mkdirSync(repository, { recursive: true });
-  initGitRepo(repository);
+  execFileSync('jj', ['git', 'init', '--colocate', repository], { stdio: 'ignore' });
   const config = { work_dir: workDir };
 
   assert.equal(sourceRepositoryPath('acme/widgets', config), realpathSync(repository));
-  const revision = await resolveWorkspaceRevision('acme/widgets', 'refs/remotes/origin/main', config);
+  const revision = await resolveWorkspaceRevision('acme/widgets', '@', config);
   assert.match(revision.commitId, /^[0-9a-f]{40,64}$/);
 
-  await assert.rejects(
-    () => resolveWorkspaceRevision('acme/widgets', 'refs/remotes/origin/nope', config),
-    (error) => error.code === 'revision_unresolved',
-  );
-
-  const plainDirectory = join(workDir, 'acme', 'not-a-repo');
-  mkdirSync(plainDirectory, { recursive: true });
+  const gitOnly = join(workDir, 'acme', 'git-only');
+  mkdirSync(gitOnly, { recursive: true });
   assert.throws(
-    () => sourceRepositoryPath('acme/not-a-repo', config),
-    (error) => error.code === 'git_required',
+    () => sourceRepositoryPath('acme/git-only', config),
+    (error) => error.code === 'jj_required',
   );
 
   const outside = join(root, 'outside');
-  mkdirSync(join(outside, '.git'), { recursive: true });
+  mkdirSync(join(outside, '.jj'), { recursive: true });
   symlinkSync(outside, join(workDir, 'acme', 'escape'));
   assert.throws(
     () => sourceRepositoryPath('acme/escape', config),

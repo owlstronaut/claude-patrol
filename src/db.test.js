@@ -257,85 +257,6 @@ test('the v10 migration preserves live global sessions and adds names', () => {
   assert.equal(readFileSync(`${path}.backup-v10-to-v${CURRENT_SCHEMA_VERSION}`).length > 0, true);
 });
 
-test('the v13 migration renames workspaces.bookmark and workspace_claims.bookmark to branch', () => {
-  const path = join(temporaryDirectory(), 'v12.db');
-  const legacy = new DatabaseSync(path);
-  legacy.exec(`
-    CREATE TABLE workspaces (
-      id TEXT PRIMARY KEY,
-      pr_id TEXT,
-      work_item_id TEXT,
-      name TEXT NOT NULL,
-      path TEXT NOT NULL,
-      bookmark TEXT NOT NULL,
-      repo TEXT,
-      status TEXT NOT NULL DEFAULT 'active',
-      created_at TEXT NOT NULL,
-      destroyed_at TEXT,
-      operation_state TEXT NOT NULL DEFAULT 'ready',
-      operation_step TEXT,
-      operation_error TEXT,
-      operation_updated_at TEXT,
-      start_revision TEXT,
-      base_commit TEXT,
-      setup_warnings_json JSON
-    );
-    INSERT INTO workspaces (
-      id, name, path, bookmark, repo, status, created_at, operation_updated_at
-    ) VALUES (
-      'workspace-1', 'acme-widgets-1', '/tmp/workspace-1', 'feature',
-      'acme/widgets', 'active', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'
-    );
-    CREATE TABLE workspace_claims (
-      repo TEXT NOT NULL,
-      bookmark TEXT NOT NULL,
-      workspace_id TEXT NOT NULL UNIQUE,
-      operation TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      PRIMARY KEY (repo, bookmark)
-    );
-    INSERT INTO workspace_claims (repo, bookmark, workspace_id, operation, created_at)
-    VALUES ('acme/widgets', 'feature', 'workspace-1', 'create', '2026-01-01T00:00:00.000Z');
-    CREATE TABLE sessions (
-      id TEXT PRIMARY KEY,
-      workspace_id TEXT REFERENCES workspaces(id),
-      work_item_id TEXT,
-      name TEXT,
-      pid INTEGER,
-      provider TEXT NOT NULL DEFAULT 'claude',
-      status TEXT NOT NULL DEFAULT 'active',
-      started_at TEXT NOT NULL,
-      ended_at TEXT,
-      claude_project_dir TEXT,
-      transcript_path TEXT
-    );
-    INSERT INTO sessions (id, workspace_id, status, started_at)
-    VALUES ('session-1', 'workspace-1', 'active', '2026-01-01T00:00:00.000Z');
-    PRAGMA user_version = 12;
-  `);
-  legacy.close();
-
-  const db = initDb(path);
-  assert.equal(db.prepare('PRAGMA user_version').get().user_version, CURRENT_SCHEMA_VERSION);
-  assert.deepEqual(
-    { ...db.prepare('SELECT id, branch, repo FROM workspaces').get() },
-    { id: 'workspace-1', branch: 'feature', repo: 'acme/widgets' },
-  );
-  assert.deepEqual(
-    { ...db.prepare('SELECT repo, branch, workspace_id FROM workspace_claims').get() },
-    { repo: 'acme/widgets', branch: 'feature', workspace_id: 'workspace-1' },
-  );
-  // The rename must leave sessions still pointing at the live workspaces table.
-  assert.deepEqual(
-    { ...db.prepare('SELECT id, workspace_id FROM sessions').get() },
-    {
-      id: 'session-1',
-      workspace_id: 'workspace-1',
-    },
-  );
-  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
-});
-
 test('configuration defaults to loopback and authored polling cadence', () => {
   const config = parseConfig({ poll: { orgs: [], repos: [] } });
   assert.equal(config.host, '127.0.0.1');
@@ -374,7 +295,7 @@ test('the current schema enforces work-item progress and exclusive workspace and
   ).run(now, now);
   db.prepare(
     `INSERT INTO workspaces (
-      id, work_item_id, name, path, branch, repo, status, created_at,
+      id, work_item_id, name, path, bookmark, repo, status, created_at,
       operation_state, operation_updated_at
     ) VALUES ('child-1', 'item-1', 'child-1', '/tmp/child-1', 'patrol/work-item-1',
       'acme/widgets', 'active', ?, 'ready', ?)`,
@@ -430,7 +351,7 @@ test('the current schema allows one active child per work-item repository', () =
   ).run(now, now);
   const insert = db.prepare(
     `INSERT INTO workspaces (
-      id, work_item_id, name, path, branch, repo, status, created_at,
+      id, work_item_id, name, path, bookmark, repo, status, created_at,
       operation_state, operation_updated_at
     ) VALUES (?, 'item-1', ?, ?, 'patrol/work-item-1', 'acme/widgets', ?, ?, 'ready', ?)`,
   );

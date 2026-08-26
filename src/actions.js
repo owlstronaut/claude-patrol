@@ -213,7 +213,7 @@ export const actionRegistry = {
         .min(1)
         .max(512)
         .optional()
-        .describe('Starting git ref/branch/SHA; required when the repository has no configured defaultRevision'),
+        .describe('Starting jj revision; required when the repository has no configured defaultRevision'),
       work_item_id: z.string().min(1).optional().describe('Target work-item ID; inferred from a work-item caller'),
     }),
     ruleFireable: false,
@@ -337,7 +337,7 @@ export const actionRegistry = {
   },
 
   create_workspace: {
-    description: 'Create a git worktree for a PR. Returns the workspace path you should cd into.',
+    description: 'Create a jj workspace (colocated worktree) for a PR. Returns the workspace path you should cd into.',
     schema: z.object({
       pr_id: z.string().describe('PR database ID (e.g. "org/repo#42")'),
     }),
@@ -777,7 +777,7 @@ export const actionRegistry = {
                   s.started_at    AS started_at,
                   w.pr_id         AS pr_id,
                   w.repo          AS repo,
-                  w.branch        AS branch,
+                  w.bookmark      AS bookmark,
                   w.path          AS workspace_path
              FROM sessions s
              LEFT JOIN workspaces w ON w.id = s.workspace_id
@@ -795,7 +795,7 @@ export const actionRegistry = {
         workspace_id: r.workspace_id,
         pr_id: r.pr_id,
         repo: r.repo,
-        branch: r.branch,
+        bookmark: r.bookmark,
         workspace_path: r.workspace_path,
         activity_state: states.get(r.session_id) ?? null,
         started_at: r.started_at,

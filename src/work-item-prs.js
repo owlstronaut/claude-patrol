@@ -194,8 +194,9 @@ export function unlinkWorkItemPullRequest(workItemId, pullRequest) {
 }
 
 /**
- * Link unowned PRs when their GitHub head is provably an ancestor of exactly
- * one work-item checkout's current commit.
+ * Link unowned PRs when their GitHub head is provably in exactly one work-item
+ * checkout's immutable history. `--ignore-working-copy` keeps reconciliation
+ * read-only and avoids snapshotting an agent's in-progress edits.
  */
 export async function reconcileWorkItemPullRequests(prIds, { runExec = execFile, logger = console } = {}) {
   const ids = [...new Set((prIds ?? []).filter((id) => typeof id === 'string'))];
@@ -229,12 +230,30 @@ export async function reconcileWorkItemPullRequests(prIds, { runExec = execFile,
     for (const candidate of candidates.all(`${pr.org}/${pr.repo}`, pr.created_at)) {
       if (candidate.base_commit === pr.head_oid) continue;
       try {
-        await runExec('git', ['merge-base', '--is-ancestor', pr.head_oid, 'HEAD'], { cwd: candidate.path });
-        matches.push(candidate.work_item_id);
-      } catch (error) {
-        // Exit code 1 means "not an ancestor" - not a provenance match. Anything
-        // else (bad revision, missing checkout) is a real failure; let it propagate.
-        if (error?.code !== 1) throw error;
+        const { stdout } = await runExec(
+          'jj',
+          [
+            '--ignore-working-copy',
+            'log',
+            '--no-graph',
+            '-r',
+            `${pr.head_oid} & ::@`,
+            '-T',
+            'commit_id ++ "\\n"',
+            '-R',
+            candidate.path,
+          ],
+          { encoding: 'utf8' },
+        );
+        if (
+          String(stdout)
+            .split(/\r?\n/u)
+            .some((line) => line.trim() === pr.head_oid)
+        ) {
+          matches.push(candidate.work_item_id);
+        }
+      } catch {
+        // A missing commit or removed checkout is not a provenance match.
       }
     }
     const unique = [...new Set(matches)];

@@ -41,17 +41,6 @@ check_optional() {
   fi
 }
 
-# gh-stack isn't a standalone binary on PATH - it's a `gh` extension invoked as
-# `gh stack`, so it needs its own check rather than command -v.
-check_gh_extension() {
-  local ext="$1" label="$2" hint="$3"
-  if gh extension list 2>/dev/null | grep -q "$ext"; then
-    echo "   ok: $label"
-  else
-    missing+=("$label - $hint")
-  fi
-}
-
 # Node >= 22 (uses node:sqlite built-in)
 if command -v node >/dev/null 2>&1; then
   node_major=$(node -p 'process.versions.node.split(".")[0]')
@@ -66,13 +55,9 @@ fi
 
 check_cmd pnpm  "pnpm"          "install via 'npm i -g pnpm' or corepack"
 check_cmd gh    "GitHub CLI"    "install via 'brew install gh' then 'gh auth login'"
+check_cmd jj    "Jujutsu (jj)"  "install via 'brew install jj' (see https://github.com/jj-vcs/jj)"
 check_cmd tmux  "tmux"          "install via 'brew install tmux'"
 check_cmd claude "Claude Code"  "install via 'npm i -g @anthropic-ai/claude-code'"
-if command -v gh >/dev/null 2>&1; then
-  check_gh_extension "github/gh-stack" "gh-stack extension" "install via 'gh extension install github/gh-stack'"
-else
-  missing+=("gh-stack extension - install via 'gh extension install github/gh-stack' (requires GitHub CLI first)")
-fi
 check_optional ghostty "Ghostty" "optional - needed only for Pop-out / Terminal buttons"
 
 if [ ${#missing[@]} -gt 0 ]; then

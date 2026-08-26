@@ -14,7 +14,7 @@ afterEach(() => closeDb());
 function configFixture() {
   return parseConfig({
     poll: { orgs: [], repos: [] },
-    repos: { 'acme/widgets': { defaultRevision: 'refs/remotes/origin/main' } },
+    repos: { 'acme/widgets': { defaultRevision: 'main@origin' } },
     work_items: {
       repositories: ['acme/widgets'],
       resolver: {
@@ -425,7 +425,7 @@ test('session filters distinguish global, work-item, and managed child targets',
   getDb()
     .prepare(
       `INSERT INTO workspaces (
-        id, work_item_id, name, path, branch, repo, status, created_at,
+        id, work_item_id, name, path, bookmark, repo, status, created_at,
         operation_state, operation_updated_at
       ) VALUES ('child-1', 'item-1', 'child', '/tmp/child', 'patrol/work-item-1',
         'acme/widgets', 'active', ?, 'ready', ?)`,

@@ -290,7 +290,7 @@ export function workItemDetail(row, { config, getSessionStates = () => [] }) {
   for (const child of children) {
     if (!byRepo.has(child.repo)) byRepo.set(child.repo, child);
   }
-  const branch = deterministicBranch(row.id);
+  const bookmark = deterministicBookmark(row.id);
   return {
     ...list,
     summary: row.summary,
@@ -316,7 +316,7 @@ export function workItemDetail(row, { config, getSessionStates = () => [] }) {
         checkout_available: Boolean(
           child && child.status === 'active' && child.operation_state !== 'destroyed' && existsSync(child.path),
         ),
-        branch: child?.branch ?? branch,
+        bookmark: child?.bookmark ?? bookmark,
         start_revision: child?.start_revision ?? config.repos?.[identifier]?.defaultRevision ?? '',
         base_commit: child?.base_commit ?? null,
         warnings: parseWarnings(child?.setup_warnings_json),
@@ -325,7 +325,7 @@ export function workItemDetail(row, { config, getSessionStates = () => [] }) {
   };
 }
 
-export function deterministicBranch(id) {
+export function deterministicBookmark(id) {
   return `patrol/work-item-${id.replaceAll('-', '').slice(0, 12)}`;
 }
 
@@ -353,10 +353,10 @@ function mapLifecycleError(error) {
     provider_unsupported: 'provider_unavailable',
     repository_unavailable: 'repo_not_local',
     unsafe_repository_path: 'repo_not_local',
-    git_required: 'repo_not_local',
+    jj_required: 'repo_not_local',
     revision_unresolved: 'revision_not_found',
-    branch_exists: 'branch_conflict',
-    workspace_conflict: 'branch_conflict',
+    bookmark_exists: 'bookmark_conflict',
+    workspace_conflict: 'bookmark_conflict',
   };
   const stable = mappings[code] ?? code;
   const allowed = new Set([
@@ -367,7 +367,8 @@ function mapLifecycleError(error) {
     'resolver_output_invalid',
     'repo_not_local',
     'revision_not_found',
-    'branch_conflict',
+    'revision_ambiguous',
+    'bookmark_conflict',
     'setup_failed',
     'compensation_failed',
     'session_launch_failed',
@@ -653,7 +654,7 @@ export function createWorkItemService({
     try {
       for (const child of rows) {
         logStage(id, 'child_compensation', `removing ${current + 1}/${rows.length} ${child.repo}`);
-        await destroyChild(child.id, getConfig(), { deleteBranch: true });
+        await destroyChild(child.id, getConfig(), { deleteBookmark: true });
         current += 1;
         mutateWorkItem(id, { progress_current: current, progress_total: rows.length });
         updateTaskProgress(task.id, { current, total: rows.length });
@@ -706,7 +707,7 @@ export function createWorkItemService({
           repo: child.repo,
           name: child.name,
           workspacePath: resolve(rootPath, 'repos', child.directory),
-          branch: deterministicBranch(id),
+          bookmark: deterministicBookmark(id),
           config: getConfig(),
         });
         current += 1;
@@ -744,7 +745,7 @@ export function createWorkItemService({
         repo: repository,
         name: child.name,
         workspacePath: resolve(item.path, 'repos', child.directory),
-        branch: deterministicBranch(id),
+        bookmark: deterministicBookmark(id),
         config: getConfig(),
         startRevision,
       });
@@ -768,7 +769,7 @@ export function createWorkItemService({
         await clearTemporaryRootFiles(item.path);
         const workspace = getDb().prepare('SELECT * FROM workspaces WHERE id = ?').get(child.id);
         if (workspace && (workspace.status !== 'destroyed' || workspace.operation_state !== 'destroyed')) {
-          await destroyChild(child.id, getConfig(), { deleteBranch: true });
+          await destroyChild(child.id, getConfig(), { deleteBookmark: true });
         }
         publishCurrentRootFiles(item, repositories);
       } catch (caught) {
@@ -792,7 +793,7 @@ export function createWorkItemService({
     const pendingWorkspace = pendingRepositoryAddition(item);
     try {
       if (pendingWorkspace?.persisted_workspace_id) {
-        await destroyChild(pendingWorkspace.id, getConfig(), { deleteBranch: true });
+        await destroyChild(pendingWorkspace.id, getConfig(), { deleteBookmark: true });
       }
       publishCurrentRootFiles(item, repositoriesFor(item));
       finishRepositoryAddition(id);
@@ -859,7 +860,7 @@ export function createWorkItemService({
     try {
       for (const child of rows) {
         logStage(id, 'child_compensation', `removing ${current + 1}/${total} ${child.repo}`);
-        await destroyChild(child.id, getConfig(), { deleteBranch: true });
+        await destroyChild(child.id, getConfig(), { deleteBookmark: true });
         current += 1;
         mutateWorkItem(id, { progress_current: current, progress_total: total });
         updateTaskProgress(task.id, { current, total });
@@ -924,7 +925,7 @@ export function createWorkItemService({
       });
       updateTaskProgress(task.id, { current, total });
       for (const child of children) {
-        await destroyChild(child.id, getConfig(), { deleteBranch: false });
+        await destroyChild(child.id, getConfig(), { deleteBookmark: false });
         current += 1;
         mutateWorkItem(id, { progress_current: current, progress_total: total });
         updateTaskProgress(task.id, { current, total });

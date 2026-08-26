@@ -32,15 +32,7 @@ const repoConfigSchema = z
   .object({
     symlinks: z.array(z.string()).optional(),
     initCommands: z.array(z.string()).optional(),
-    defaultRevision: z
-      .string()
-      .trim()
-      .min(1)
-      .refine(
-        (value) => value.startsWith('refs/remotes/origin/'),
-        'must be a fully-qualified remote-tracking ref, e.g. "refs/remotes/origin/main" (short forms like "origin/main" or "main" are ambiguous with local branches)',
-      )
-      .optional(),
+    defaultRevision: z.string().trim().min(1).optional(),
   })
   .strict();
 

@@ -12,26 +12,6 @@ That exposed the third cause: `ToolSearch` is a `tool_use` block like any other,
 
 Verified end-to-end against a real Linear reference: resolution returned the issue's title and summary, selected exactly one of three candidate repositories (correctly, the one the issue concerns), created the worktree from `refs/remotes/upstream/main`, generated the parent AGENTS.md/CLAUDE.md/TASK.json, and left the agent unstarted. Destroying it removed the worktree and root directory and preserved the branch, which is the documented policy.
 
-## 2026-08-26 - Replace jj with plain git worktrees and gh-stack
-
-Patrol's whole workspace layer was built on Jujutsu: `jj workspace add/forget` for checkouts, `jj bookmark` for branch pointers, and jj revsets for the review range. jj is no longer part of the toolchain, so every one of those call sites is now git, and the stacked-branch workflow that jj's automatic rebasing used to cover is delegated to the `gh-stack` GitHub CLI extension.
-
-Workspaces are now `git worktree add -b <branch> <path> <start>` against the main checkout under `work_dir`, and teardown is `git worktree remove --force --force` after checking `git worktree list --porcelain` for the target. Checking the porcelain listing first (instead of pattern-matching git's error text) makes removing an already-gone worktree a clean no-op. Crash recovery also runs `git worktree prune` per repo, because a worktree directory deleted out-of-band leaves administrative records under `.git/worktrees/<name>/` that block reusing the same branch or path. `bookmark` became `branch` throughout the schema, the API, and the frontend.
-
-`defaultRevision` is now required to be a fully-qualified remote-tracking ref (`refs/remotes/origin/main`). jj's `main@origin` had no ambiguity; in git, `origin/main` and `main` can resolve to different commits depending on what local branches exist, and silently starting a work item from a stale local branch is the kind of bug you find three commits later.
-
-Three real defects surfaced while porting the tests, which is most of the value in this change:
-
-The new v13 table definition was copied from v9 but dropped its `sessions` block, and `resetSchema` calls v13 - so every freshly created database failed to initialize with `no such table: sessions`. The sessions DDL is now its own function called from both the reset path and the v8-to-v9 migration.
-
-The v12-to-v13 migration renamed `workspaces` to a temp table and rebuilt it. SQLite rewrites referencing foreign keys on `ALTER TABLE ... RENAME TO`, so `sessions.workspace_id` was repointed at `workspaces_v12` and then orphaned when that table was dropped, failing `foreign_key_check`. It is a column rename now (`ALTER TABLE ... RENAME COLUMN`), which preserves foreign keys, indexes, and rows without a rebuild.
-
-`git diff` omits untracked files entirely, whereas jj's `@` auto-snapshotted them. Both review services gate on `resolveReviewRange`'s summary, so a workspace whose only change was a new file reported "No changes in the effective PR diff" and was never reviewed. `withUntrackedIntentToAdd` now stages untracked-but-not-ignored files with `git add -N` around *both* the change-detection gate and the diff read, then restores the index. Staging only the diff read - the first cut - still tripped the gate.
-
-Session promote loses jj's implicit snapshot commit, so it pins `HEAD` up front and moves uncommitted work with `git stash push -u`, pinning `refs/stash` by SHA because the stash reflog is shared across every worktree of a repo.
-
-The rebase QuickAction and the corresponding system-prompt guidance now check `gh stack view --json` first and use `gh stack sync` / `gh stack rebase --continue` for tracked stacks, falling back to `git rebase origin/<target>` plus `git push --force-with-lease` for standalone branches. Startup and `scripts/setup.sh` check for the `gh-stack` extension via `gh extension list` rather than `command -v`, since it is not a standalone binary.
-
 ## 2026-06-02 - Cleanup of merged/closed PRs runs every cycle again
 
 The 2026-05-27 incremental-polling rewrite reintroduced the exact bug the 2026-05-13 changes had fixed: merged/closed PRs and their workspaces only got torn down on the 30-minute full sweep, and the manual "Sync now" button had quietly lost its forced full sweep, so it ran an ordinary incremental cycle that couldn't clean up at all. An `updated:>=` search can't distinguish "merged" from "not updated lately", which is why orphan cleanup was gated behind the full sweep.

@@ -51,7 +51,7 @@
   @apply text-right;
 }
 
-.branch {
+.bookmark {
   @apply font-mono text-sm font-semibold text-gray-900 no-underline hover:text-blue-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500;
 }
 
