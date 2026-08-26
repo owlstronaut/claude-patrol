@@ -28,6 +28,7 @@ import { destroyTui, initTui, setHeader } from './tui.js';
 import { startUpdateChecks, stopUpdateChecks } from './update-check.js';
 import { recoverInterruptedWorkItems } from './work-items.js';
 import { inspectWorkspaceState, pruneStaleComposeStacks, recoverInterruptedWorkspaceOperations } from './workspace.js';
+import { reconcilePatrolWorkspacesOnStartup } from './workspace-reconciliation.js';
 
 /**
  * Start the claude-patrol server.
@@ -161,6 +162,28 @@ export async function startServer(options = {}) {
   writePid(port);
 
   const serverUrl = `http://localhost:${port}`;
+
+  try {
+    const reconciliation = await reconcilePatrolWorkspacesOnStartup(config, {
+      isPatrolAvailable: () => server.server.listening,
+    });
+    if (reconciliation.deleted.length > 0) {
+      console.log(`[claude-patrol] Removed ${reconciliation.deleted.length} orphaned Patrol workspace(s)`);
+    }
+    if (reconciliation.cleanedWorkspaces.length > 0) {
+      console.log(
+        `[claude-patrol] Completed cleanup for ${reconciliation.cleanedWorkspaces.length} stale workspace operation(s)`,
+      );
+    }
+    for (const warning of reconciliation.warnings) {
+      console.warn(`[claude-patrol] Workspace reconciliation warning: ${warning}`);
+    }
+    for (const candidate of reconciliation.blocked) {
+      console.warn(`[claude-patrol] Kept stale workspace ${candidate.path}: ${candidate.reason}`);
+    }
+  } catch (error) {
+    console.warn(`[claude-patrol] Workspace reconciliation failed: ${error.message}`);
+  }
 
   // Start TUI if running in an interactive terminal
   const isTTY = process.stdin.isTTY && process.stdout.isTTY;

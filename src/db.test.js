@@ -57,6 +57,13 @@ test('a new database is migrated to the current schema', () => {
   assert.ok(
     db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'work_item_pull_requests'").get(),
   );
+  assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workspace_orphans'").get());
+  assert.ok(
+    db
+      .prepare("PRAGMA table_info('workspace_orphans')")
+      .all()
+      .some((column) => column.name === 'first_seen'),
+  );
   assert.ok(
     db
       .prepare("PRAGMA table_info('prs')")
@@ -190,6 +197,15 @@ test('a pre-v7 database is backed up and reset to the clean schema', () => {
   assert.equal(db.prepare('PRAGMA user_version').get().user_version, CURRENT_SCHEMA_VERSION);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM prs').get().count, 0);
   assert.equal(db.prepare('SELECT COUNT(*) AS count FROM workspaces').get().count, 0);
+  assert.deepEqual(
+    { ...db.prepare('SELECT path, repo, workspace_name, ownership_source FROM workspace_orphans').get() },
+    {
+      path: '/tmp/legacy',
+      repo: 'acme/widgets',
+      workspace_name: 'legacy',
+      ownership_source: 'database',
+    },
+  );
   assert.equal(readFileSync(`${path}.backup-v0-to-v${CURRENT_SCHEMA_VERSION}`).length > 0, true);
 });
 

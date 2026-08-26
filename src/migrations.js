@@ -1,6 +1,78 @@
 /** Schema v7 intentionally resets every pre-v7 database. */
 
-export const CURRENT_SCHEMA_VERSION = 12;
+export const CURRENT_SCHEMA_VERSION = 13;
+
+function createWorkspaceOrphansTable(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS workspace_orphans (
+      path TEXT PRIMARY KEY,
+      repo TEXT NOT NULL,
+      workspace_name TEXT NOT NULL,
+      ownership_source TEXT NOT NULL CHECK(ownership_source IN ('marker', 'database')),
+      first_seen TEXT NOT NULL,
+      last_seen TEXT NOT NULL,
+      operation_state TEXT NOT NULL CHECK(operation_state IN ('detected', 'destroying', 'error')),
+      operation_step TEXT NOT NULL,
+      operation_error TEXT,
+      operation_updated_at TEXT NOT NULL,
+      commit_id TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_workspace_orphans_operation_state
+      ON workspace_orphans(operation_state, operation_updated_at);
+  `);
+}
+
+function captureResetWorkspaceOwnership(db) {
+  const hasWorkspaces = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'workspaces'").get();
+  if (!hasWorkspaces) return [];
+  const workspaceColumns = new Set(
+    db
+      .prepare("PRAGMA table_info('workspaces')")
+      .all()
+      .map((column) => column.name),
+  );
+  if (![...['id', 'name', 'path']].every((column) => workspaceColumns.has(column))) return [];
+
+  const hasPrs = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'prs'").get();
+  const canJoinPrs = hasPrs && workspaceColumns.has('pr_id');
+  const repoExpression = workspaceColumns.has('repo') ? 'w.repo' : 'NULL';
+  const join = canJoinPrs ? 'LEFT JOIN prs p ON p.id = w.pr_id' : '';
+  const prOwner = canJoinPrs ? 'p.org' : 'NULL';
+  const prRepo = canJoinPrs ? 'p.repo' : 'NULL';
+  try {
+    return db
+      .prepare(
+        `SELECT w.id, w.name, w.path, ${repoExpression} AS workspace_repo,
+                ${prOwner} AS pr_owner, ${prRepo} AS pr_repo
+           FROM workspaces w ${join}`,
+      )
+      .all()
+      .map((row) => ({
+        id: row.id,
+        name: row.name,
+        path: row.path,
+        repo: row.workspace_repo ?? (row.pr_owner && row.pr_repo ? `${row.pr_owner}/${row.pr_repo}` : null),
+      }))
+      .filter((row) => typeof row.repo === 'string' && row.repo.split('/').length === 2);
+  } catch {
+    return [];
+  }
+}
+
+function restoreResetWorkspaceOwnership(db, workspaces) {
+  if (workspaces.length === 0) return;
+  const now = new Date().toISOString();
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO workspace_orphans (
+      path, repo, workspace_name, ownership_source, first_seen, last_seen,
+      operation_state, operation_step, operation_updated_at
+    ) VALUES (?, ?, ?, 'database', ?, ?, 'detected', 'destroy:detected', ?)
+  `);
+  for (const workspace of workspaces) {
+    insert.run(workspace.path, workspace.repo, workspace.name, now, now, now);
+  }
+}
 
 function createWorkItemTables(db) {
   db.exec(`
@@ -156,6 +228,7 @@ function resetSchema(db) {
     DROP TABLE IF EXISTS rule_runs;
     DROP TABLE IF EXISTS work_item_pull_requests;
     DROP TABLE IF EXISTS work_item_repository_additions;
+    DROP TABLE IF EXISTS workspace_orphans;
     DROP TABLE IF EXISTS workspace_claims;
     DROP TABLE IF EXISTS sessions;
     DROP TABLE IF EXISTS workspaces;
@@ -246,6 +319,7 @@ function resetSchema(db) {
   createWorkspaceTablesV9(db);
   createWorkItemRepositoryAdditionTable(db);
   createWorkItemPullRequestTable(db);
+  createWorkspaceOrphansTable(db);
 }
 
 function v8InvalidReferences(db) {
@@ -331,6 +405,7 @@ export function migrateDb(db) {
 
   db.exec('BEGIN IMMEDIATE');
   try {
+    const resetWorkspaceOwnership = version < 7 ? captureResetWorkspaceOwnership(db) : [];
     if (version < 7) {
       resetSchema(db);
     } else if (version === 7) {
@@ -345,6 +420,8 @@ export function migrateDb(db) {
     addSessionNames(db);
     addPrHeadOid(db);
     createWorkItemPullRequestTable(db);
+    createWorkspaceOrphansTable(db);
+    restoreResetWorkspaceOwnership(db, resetWorkspaceOwnership);
     db.exec(`PRAGMA user_version = ${CURRENT_SCHEMA_VERSION}`);
     db.exec('COMMIT');
     const kind = version < 7 ? 'Destructive schema reset' : 'Schema migration';
