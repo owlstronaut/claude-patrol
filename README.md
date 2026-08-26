@@ -131,8 +131,8 @@ Every candidate source repository must already exist as a git repository below `
   "work_dir": "~/work",
   "workspace_base_path": "~/.claude-patrol/workspaces",
   "repos": {
-    "chainguard-dev/mono": { "defaultRevision": "main@origin" },
-    "chainguard-dev/ecosystems-packages": { "defaultRevision": "main@origin" }
+    "chainguard-dev/mono": { "defaultRevision": "refs/remotes/origin/main" },
+    "chainguard-dev/ecosystems-packages": { "defaultRevision": "refs/remotes/origin/main" }
   },
   "work_items": {
     "repositories": [
