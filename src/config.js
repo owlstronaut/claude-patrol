@@ -13,9 +13,6 @@ const OWNER_REPO_RE =
   /^(?!\.{1,2}\/)(?![^/]+\/\.{1,2}$)[^\s/\\\u0000-\u001f\u007f-\u009f]+\/[^\s/\\\u0000-\u001f\u007f-\u009f]+$/u;
 const MCP_NAME_RE = /^[A-Za-z0-9_-]+$/;
 const MCP_TOOL_RE = /^[A-Za-z0-9_.-]+$/;
-// Any remote, not just origin: a fork checkout tracks the canonical repo under
-// a second remote (commonly `upstream`), and that is the ref work items want.
-const REMOTE_TRACKING_REF_RE = /^refs\/remotes\/[^/]+\/.+$/;
 
 function hasAllowedResolverUrl(value) {
   try {
@@ -40,8 +37,8 @@ const repoConfigSchema = z
       .trim()
       .min(1)
       .refine(
-        (value) => REMOTE_TRACKING_REF_RE.test(value),
-        'must be a fully-qualified remote-tracking ref, e.g. "refs/remotes/origin/main" or "refs/remotes/upstream/main" (short forms like "origin/main" or "main" are ambiguous with local branches)',
+        (value) => value.startsWith('refs/remotes/origin/'),
+        'must be a fully-qualified remote-tracking ref, e.g. "refs/remotes/origin/main" (short forms like "origin/main" or "main" are ambiguous with local branches)',
       )
       .optional(),
   })

@@ -109,7 +109,7 @@ Running without a subcommand defaults to `start`.
 | `symlink_memory` | Create `.claude/memory` symlinks in workspaces |
 | `repos.<org/repo>.symlinks` | Additional symlinks to create in workspaces |
 | `repos.<org/repo>.initCommands` | Commands to run after workspace creation |
-| `repos.<org/repo>.defaultRevision` | Required starting revision for a repository available to Work Items. Must be a fully-qualified remote-tracking ref under any remote, e.g. `refs/remotes/origin/main` or, in a fork checkout, `refs/remotes/upstream/main`. Patrol resolves it without fetching, so the ref is only as fresh as your last `git fetch`. |
+| `repos.<org/repo>.defaultRevision` | Required starting revision for a repository available to Work Items. Must be a fully-qualified remote-tracking ref, e.g. `refs/remotes/origin/main`. |
 | `work_items.repositories` | Candidate `owner/repo` identifiers the resolver may select |
 | `work_items.resolver.provider` | Optional fixed resolver provider, `claude` or `codex`. Omit to use the work item's selected provider. |
 | `work_items.resolver.server` | One read-only HTTP MCP server, with `name`, `transport`, `url`, and `enabled_tools` |
@@ -131,8 +131,8 @@ Every candidate source repository must already exist as a git repository below `
   "work_dir": "~/work",
   "workspace_base_path": "~/.claude-patrol/workspaces",
   "repos": {
-    "chainguard-dev/mono": { "defaultRevision": "refs/remotes/origin/main" },
-    "chainguard-dev/ecosystems-packages": { "defaultRevision": "refs/remotes/origin/main" }
+    "chainguard-dev/mono": { "defaultRevision": "main@origin" },
+    "chainguard-dev/ecosystems-packages": { "defaultRevision": "main@origin" }
   },
   "work_items": {
     "repositories": [
