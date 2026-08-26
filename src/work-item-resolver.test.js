@@ -67,7 +67,13 @@ test('provider arguments isolate the configured read-only MCP server', () => {
   assert.ok(claude.includes('--verbose'));
   assert.ok(!claude.includes('--safe-mode'));
   assert.ok(claude.includes('mcp__work-reference__get_issue'));
-  assert.equal(claude[claude.indexOf('--tools') + 1], '');
+  // --tools must not be passed: with it, the CLI denies the allowlisted MCP
+  // tool under `dontAsk` and every resolve fails.
+  assert.equal(claude.includes('--tools'), false);
+  assert.deepEqual(claude.slice(claude.indexOf('--allowedTools'), claude.indexOf('--allowedTools') + 2), [
+    '--allowedTools',
+    'mcp__work-reference__get_issue',
+  ]);
 
   const codex = buildCodexResolverArgs(config, '/tmp/resolver', '/tmp/schema.json');
   assert.ok(codex.includes('--ignore-user-config'));

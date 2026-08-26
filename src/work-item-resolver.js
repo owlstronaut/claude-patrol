@@ -78,12 +78,16 @@ export function buildClaudeResolverArgs(config) {
     '--strict-mcp-config',
     '--mcp-config',
     mcpConfig,
-    '--tools',
-    '',
+    // No --tools: passing it at all makes the CLI deny the allowlisted MCP tool
+    // under `dontAsk`. The allowlist below plus createToolInspector are what
+    // restrict the resolver to the configured MCP tool.
     '--allowedTools',
     ...allowedTools,
+    // `dontAsk` denies MCP tools outright, ignoring --allowedTools and any
+    // permissions.allow rule, so every resolve fails. `auto` honours the
+    // allowlist below; createToolInspector still aborts on anything else.
     '--permission-mode',
-    'dontAsk',
+    'auto',
     '--no-chrome',
     '--disable-slash-commands',
     '--setting-sources',
@@ -192,11 +196,14 @@ function parseFinalObject(value) {
   }
 }
 
+// Internal CLI mechanisms rather than external capabilities: StructuredOutput
+// satisfies --json-schema, and ToolSearch only loads tool schemas - the tool it
+// then calls is still checked against the allowlist.
+const CLAUDE_INTERNAL_TOOLS = new Set(['StructuredOutput', 'ToolSearch']);
+
 function claudeToolName(block) {
   if (block?.type !== 'tool_use' || typeof block.name !== 'string') return null;
-  // Claude emits this internal pseudo-tool to satisfy --json-schema. It is the
-  // structured result mechanism, not an external capability.
-  return block.name === 'StructuredOutput' ? null : block.name;
+  return CLAUDE_INTERNAL_TOOLS.has(block.name) ? null : block.name;
 }
 
 export function parseClaudeResolverOutput(stdout, config) {
@@ -561,9 +568,9 @@ export function createWorkItemResolver({ run = execFile, spawnProcess = spawn } 
               '--output-format',
               '--permission-mode',
               '--print',
+              '--allowedTools',
               '--setting-sources',
               '--strict-mcp-config',
-              '--tools',
               '--verbose',
             ],
             run,
