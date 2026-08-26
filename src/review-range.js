@@ -7,14 +7,6 @@ function taggedError(code, message, cause) {
   return error;
 }
 
-function exactPattern(value) {
-  return `exact:${JSON.stringify(value)}`;
-}
-
-function commitRevset(commitId) {
-  return `commit_id(${JSON.stringify(commitId)})`;
-}
-
 function parseCommitId(stdout, label) {
   const value = String(stdout || '').trim();
   if (!/^[0-9a-f]{40,64}$/.test(value)) {
@@ -23,14 +15,47 @@ function parseCommitId(stdout, label) {
   return value;
 }
 
-async function runJj(run, workspacePath, args, options = {}) {
+async function runGit(run, cwd, args, options = {}) {
   try {
-    return await run('jj', [...args, '-R', workspacePath], {
+    return await run('git', args, {
+      cwd,
       timeout: options.timeout ?? 30_000,
       maxBuffer: options.maxBuffer ?? 1024 * 1024,
     });
   } catch (error) {
     throw taggedError('diff_resolution_failed', 'Could not prepare the full workspace diff for review', error);
+  }
+}
+
+/**
+ * Run `fn` with untracked-but-not-ignored files staged intent-to-add, then
+ * restore the index. `git diff` omits untracked files entirely, so without this
+ * a workspace whose only change is new files looks empty to both the
+ * change-detection gate and the diff read.
+ * @template T
+ * @param {typeof execFile} run
+ * @param {string} cwd
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+export async function withUntrackedIntentToAdd(run, cwd, fn) {
+  let untracked = [];
+  try {
+    const { stdout } = await run('git', ['ls-files', '--others', '--exclude-standard'], { cwd });
+    untracked = String(stdout || '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (untracked.length > 0) await run('git', ['add', '-N', '--', ...untracked], { cwd });
+  } catch (error) {
+    throw taggedError('diff_resolution_failed', 'Could not stage untracked workspace files for review', error);
+  }
+  try {
+    return await fn();
+  } finally {
+    if (untracked.length > 0) {
+      await run('git', ['reset', '--quiet', '--', ...untracked], { cwd }).catch(() => {});
+    }
   }
 }
 
@@ -40,51 +65,16 @@ export async function resolveReviewRange({ workspacePath, baseBranch, run = exec
     throw taggedError('workspace_unavailable', 'The workspace path is not available', error);
   });
 
-  await runJj(
-    run,
-    resolvedPath,
-    ['git', 'fetch', '--remote', exactPattern('origin'), '--branch', exactPattern(baseBranch)],
-    { timeout: 2 * 60 * 1000 },
-  );
+  await runGit(run, resolvedPath, ['fetch', 'origin', baseBranch], { timeout: 2 * 60 * 1000 });
 
-  const baseResult = await runJj(run, resolvedPath, [
-    'log',
-    '--ignore-working-copy',
-    '-r',
-    `exactly(remote_bookmarks(${exactPattern(baseBranch)}, ${exactPattern('origin')}), 1)`,
-    '--no-graph',
-    '-T',
-    'commit_id ++ "\\n"',
-  ]);
-  const headResult = await runJj(run, resolvedPath, [
-    'log',
-    '-r',
-    'exactly(@, 1)',
-    '--no-graph',
-    '-T',
-    'commit_id ++ "\\n"',
-  ]);
+  const baseResult = await runGit(run, resolvedPath, ['rev-parse', '--verify', `refs/remotes/origin/${baseBranch}`]);
   const base = parseCommitId(baseResult.stdout, 'base branch');
-  const head = parseCommitId(headResult.stdout, 'workspace');
-  const forkResult = await runJj(run, resolvedPath, [
-    'log',
-    '--ignore-working-copy',
-    '-r',
-    `exactly(fork_point(${commitRevset(base)} | ${commitRevset(head)}), 1)`,
-    '--no-graph',
-    '-T',
-    'commit_id ++ "\\n"',
-  ]);
-  const fork = parseCommitId(forkResult.stdout, 'fork point');
-  const summary = await runJj(run, resolvedPath, [
-    'diff',
-    '--ignore-working-copy',
-    '--from',
-    fork,
-    '--to',
-    head,
-    '--summary',
-  ]);
 
-  return { workspacePath: resolvedPath, base, head, fork, summary: String(summary.stdout || '').trim() };
+  const forkResult = await runGit(run, resolvedPath, ['merge-base', base, 'HEAD']);
+  const fork = parseCommitId(forkResult.stdout, 'fork point');
+
+  // A single ref diffs against the live working tree (staged + unstaged).
+  const summary = await runGit(run, resolvedPath, ['diff', '--name-status', fork]);
+
+  return { workspacePath: resolvedPath, base, fork, summary: String(summary.stdout || '').trim() };
 }
