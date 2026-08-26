@@ -26,12 +26,12 @@ test('PR API uses injected dependencies and reports authored freshness', async (
   db.prepare('UPDATE sync_state SET synced_at = ? WHERE id = 1').run(current);
   db.prepare(
     `INSERT INTO workspaces
-      (id, pr_id, name, path, bookmark, status, created_at, operation_state, operation_step, operation_updated_at)
+      (id, pr_id, name, path, branch, status, created_at, operation_state, operation_step, operation_updated_at)
      VALUES ('ready-workspace', NULL, 'ready', '/tmp/ready', 'feature', 'active', ?, 'ready', 'create:complete', ?)`,
   ).run(current, current);
   db.prepare(
     `INSERT INTO workspaces
-      (id, pr_id, name, path, bookmark, status, created_at, operation_state, operation_step, operation_error, operation_updated_at)
+      (id, pr_id, name, path, branch, status, created_at, operation_state, operation_step, operation_error, operation_updated_at)
      VALUES ('failed-workspace', NULL, 'failed', '/tmp/failed', 'feature', 'active', ?, 'error', 'destroy:directory', 'failed', ?)`,
   ).run(current, current);
   db.prepare(

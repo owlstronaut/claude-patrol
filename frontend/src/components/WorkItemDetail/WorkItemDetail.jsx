@@ -203,8 +203,8 @@ function RepositoryRow({ repository }) {
       </Stack>
       <dl className={styles.repositoryFacts}>
         <div>
-          <dt>Bookmark</dt>
-          <dd>{repository.bookmark}</dd>
+          <dt>Branch</dt>
+          <dd>{repository.branch}</dd>
         </div>
         <div>
           <dt>Start revision</dt>
@@ -340,7 +340,7 @@ export function WorkItemDetail({ workItemId, onBack, targetStates, selectedPrId 
     const count = workItem.repository_workspaces.filter((repository) => repository.checkout_available).length;
     if (
       !window.confirm(
-        `Remove ${count} checkout directories and their jj workspace registrations. Patrol will leave repository bookmarks and commits in the source repositories.`,
+        `Remove ${count} checkout directories and their git worktrees. Patrol will leave repository branches and commits in the source repositories.`,
       )
     )
       return;

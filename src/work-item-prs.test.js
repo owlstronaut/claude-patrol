@@ -57,7 +57,7 @@ function insertChildWorkspace(id, workItemId, path) {
   getDb()
     .prepare(
       `INSERT INTO workspaces (
-        id, work_item_id, name, path, bookmark, repo, status, created_at,
+        id, work_item_id, name, path, branch, repo, status, created_at,
         operation_state, operation_updated_at, base_commit
       ) VALUES (?, ?, ?, ?, ?, 'acme/widgets', 'active', ?, 'ready', ?, ?)`,
     )
@@ -118,11 +118,14 @@ test('provenance reconciliation links only a unique immutable-history match', as
   const warnings = [];
 
   const linked = await reconcileWorkItemPullRequests(['acme/widgets#21', 'acme/widgets#22'], {
-    runExec: async (_command, args) => {
-      const oid = args[args.indexOf('-r') + 1].split(' ')[0];
-      const path = args[args.indexOf('-R') + 1];
-      const matches = oid === uniqueOid ? path.includes('/one/') : oid === ambiguousOid;
-      return { stdout: matches ? `${oid}\n` : '' };
+    runExec: async (_command, args, options) => {
+      const oid = args[2];
+      const path = options.cwd;
+      const isAncestor = oid === uniqueOid ? path.includes('/one/') : oid === ambiguousOid;
+      if (isAncestor) return {};
+      const error = new Error('not an ancestor');
+      error.code = 1;
+      throw error;
     },
     logger: { warn: (message) => warnings.push(message) },
   });
@@ -145,7 +148,7 @@ test('PR dispatch resolves through the owning work item instead of a standalone 
   getDb()
     .prepare(
       `INSERT INTO workspaces (
-        id, pr_id, name, path, bookmark, repo, status, created_at,
+        id, pr_id, name, path, branch, repo, status, created_at,
         operation_state, operation_updated_at
       ) VALUES ('legacy-pr-workspace', 'acme/widgets#31', 'legacy', '/tmp/legacy',
         'feature-31', 'acme/widgets', 'active', ?, 'ready', ?)`,

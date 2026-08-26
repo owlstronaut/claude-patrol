@@ -20,7 +20,8 @@
       ],
       "initCommands": [
         "npm install"
-      ]
+      ],
+      "defaultRevision": "refs/remotes/origin/main"
     }
   }
 }

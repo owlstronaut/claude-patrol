@@ -10,7 +10,7 @@ import {
   popOutSession,
   reattachSession,
 } from '../pty-manager.js';
-import { sanitizePublicText } from '../public-errors.js';
+import { sanitizePublicText, sanitizeWorkspaceWarnings } from '../public-errors.js';
 import { normalizeSessionProvider } from '../session-launch.js';
 import { sessionTargetFromRow } from '../session-target.js';
 import { runTask } from '../tasks.js';
@@ -22,6 +22,40 @@ import {
 } from '../transcripts.js';
 import { execFile, expandPath, toClaudeProjectKey } from '../utils.js';
 import { createScratchWorkspace } from '../workspace.js';
+
+/** @type {Map<string, Promise<unknown>>} */
+const mainRepoLocks = new Map();
+
+/**
+ * Serialize promote operations against the same main repo checkout - the
+ * stash push/apply sequence below isn't atomic against a second concurrent
+ * stash push on the shared `refs/stash` ref.
+ * @template T
+ * @param {string} mainRepoPath
+ * @param {() => Promise<T>} fn
+ * @returns {Promise<T>}
+ */
+async function withMainRepoLock(mainRepoPath, fn) {
+  const prev = mainRepoLocks.get(mainRepoPath);
+  const current = (async () => {
+    if (prev) {
+      try {
+        await prev;
+      } catch {
+        /* prior holder's failure is its own to report */
+      }
+    }
+    return fn();
+  })();
+  mainRepoLocks.set(mainRepoPath, current);
+  try {
+    return await current;
+  } finally {
+    if (mainRepoLocks.get(mainRepoPath) === current) {
+      mainRepoLocks.delete(mainRepoPath);
+    }
+  }
+}
 
 /**
  * Register session routes.
@@ -396,58 +430,95 @@ export function registerSessionRoutes(app) {
     const mainRepoPath = resolve(expandPath(config.work_dir), org, repoName);
 
     try {
-      const { workspace, session: newSession } = await runTask(
+      const {
+        workspace,
+        session: newSession,
+        warnings,
+      } = await runTask(
         {
           kind: 'session.promote',
           label: `Promote session to scratch-${branch.replace(/[^a-z0-9-]/gi, '-').toLowerCase()}`,
           context: { sessionId: session.id, repo, branch },
         },
-        async () => {
-          // 1. Create scratch workspace starting from default@- (parent of main working copy)
-          const workspace = await createScratchWorkspace(repo, branch, config, { startRevision: 'default@-' });
+        () =>
+          withMainRepoLock(mainRepoPath, async () => {
+            const warnings = [];
 
-          // 2. Migrate changes via jj squash (non-fatal if empty)
-          try {
-            await execFile('jj', ['squash', '--from', 'default@', '--into', `${workspace.name}@`, '-R', mainRepoPath]);
-          } catch (err) {
-            console.warn(`[promote] jj squash non-fatal: ${err.message}`);
-          }
+            // Pin the base up front so a concurrent commit in the main
+            // checkout cannot move it mid-promote.
+            const { stdout: headOut } = await execFile('git', ['rev-parse', 'HEAD'], {
+              cwd: mainRepoPath,
+              encoding: 'utf8',
+            });
+            const headSha = headOut.trim();
 
-          // 3. Copy Claude session files to new workspace's project dir
-          let claudeSessionUuid = null;
-          if (session.claude_project_dir) {
-            const jsonlPath = findSessionJsonl(session.claude_project_dir, session.started_at, null);
-            if (jsonlPath) {
-              claudeSessionUuid = basename(jsonlPath, '.jsonl');
-              const targetProjectDir = resolve(expandPath('~/.claude/projects'), toClaudeProjectKey(workspace.path));
-              mkdirSync(targetProjectDir, { recursive: true });
+            // 1. Create scratch workspace off the pinned commit
+            const workspace = await createScratchWorkspace(repo, branch, config, { startRevision: headSha });
 
-              // Copy the .jsonl file
-              copyFileSync(jsonlPath, resolve(targetProjectDir, basename(jsonlPath)));
-
-              // Copy the session directory (contains tool results, images, etc.) if it exists
-              const sessionDir = resolve(session.claude_project_dir, claudeSessionUuid);
-              const targetSessionDir = resolve(targetProjectDir, claudeSessionUuid);
-              if (existsSync(sessionDir)) {
-                cpSync(sessionDir, targetSessionDir, { recursive: true });
+            // 2. Migrate uncommitted changes (incl. untracked files) out of the
+            // main checkout via a stash.
+            const { stdout: stashOut } = await execFile('git', ['stash', 'push', '-u', '-m', `promote to ${branch}`], {
+              cwd: mainRepoPath,
+              encoding: 'utf8',
+            });
+            if (!/No local changes to save/.test(stashOut)) {
+              // refs/stash (and its reflog) is shared across all worktrees of
+              // this repo, so pin the exact SHA rather than a relative
+              // stash@{0} index that could shift under a concurrent push.
+              const { stdout: stashShaOut } = await execFile('git', ['rev-parse', 'refs/stash'], {
+                cwd: mainRepoPath,
+                encoding: 'utf8',
+              });
+              const stashSha = stashShaOut.trim();
+              try {
+                // apply (not pop) so we control the drop explicitly below,
+                // based on whether the apply actually succeeded.
+                await execFile('git', ['stash', 'apply', stashSha], { cwd: workspace.path });
+                await execFile('git', ['stash', 'drop', stashSha], { cwd: mainRepoPath });
+              } catch {
+                // Leave the stash entry and conflict markers in place so the
+                // change isn't lost; the user/agent resolves it manually.
+                warnings.push(
+                  `Migrating uncommitted changes hit a conflict - resolve manually in ${workspace.path} (stash entry preserved: ${stashSha})`,
+                );
               }
             }
-          }
 
-          // 4. Kill the old global session
-          await killSessionAndWait(session.id);
+            // 4. Copy Claude session files to new workspace's project dir
+            let claudeSessionUuid = null;
+            if (session.claude_project_dir) {
+              const jsonlPath = findSessionJsonl(session.claude_project_dir, session.started_at, null);
+              if (jsonlPath) {
+                claudeSessionUuid = basename(jsonlPath, '.jsonl');
+                const targetProjectDir = resolve(expandPath('~/.claude/projects'), toClaudeProjectKey(workspace.path));
+                mkdirSync(targetProjectDir, { recursive: true });
 
-          // 5. Create new session in workspace with --resume
-          const newSession = claudeSessionUuid
-            ? createResumedSession({ type: 'workspace', id: workspace.id }, workspace.path, claudeSessionUuid)
-            : createSession({ type: 'workspace', id: workspace.id }, workspace.path);
+                // Copy the .jsonl file
+                copyFileSync(jsonlPath, resolve(targetProjectDir, basename(jsonlPath)));
 
-          return { workspace, session: newSession };
-        },
+                // Copy the session directory (contains tool results, images, etc.) if it exists
+                const sessionDir = resolve(session.claude_project_dir, claudeSessionUuid);
+                const targetSessionDir = resolve(targetProjectDir, claudeSessionUuid);
+                if (existsSync(sessionDir)) {
+                  cpSync(sessionDir, targetSessionDir, { recursive: true });
+                }
+              }
+            }
+
+            // 5. Kill the old global session
+            await killSessionAndWait(session.id);
+
+            // 6. Create new session in workspace with --resume
+            const newSession = claudeSessionUuid
+              ? createResumedSession({ type: 'workspace', id: workspace.id }, workspace.path, claudeSessionUuid)
+              : createSession({ type: 'workspace', id: workspace.id }, workspace.path);
+
+            return { workspace, session: newSession, warnings: sanitizeWorkspaceWarnings(warnings) };
+          }),
       );
 
       emitLocalChange();
-      return reply.code(201).send({ workspace, session: newSession });
+      return reply.code(201).send({ workspace, session: newSession, warnings });
     } catch (err) {
       return reply.code(500).send({ error: `Promote failed: ${err.message}` });
     }

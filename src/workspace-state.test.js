@@ -14,12 +14,25 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
+function initGitRepo(path) {
+  const run = (...args) => execFileSync('git', args, { cwd: path, stdio: 'ignore' });
+  run('init', '--initial-branch=main');
+  run('config', 'user.email', 'patrol@example.test');
+  run('config', 'user.name', 'Patrol Test');
+  // A signing key in the developer's global config would block this commit.
+  run('config', 'commit.gpgsign', 'false');
+  run('commit', '--allow-empty', '-m', 'initial');
+  // Configured revisions are remote-tracking refs; fake one so the fixture
+  // does not need a real remote.
+  run('update-ref', 'refs/remotes/origin/main', 'HEAD');
+}
+
 function createScratchConfig() {
   const root = mkdtempSync(join(tmpdir(), 'patrol-workspace-state-'));
   temporaryDirectories.push(root);
   const source = join(root, 'sources', 'example', 'project');
   mkdirSync(source, { recursive: true });
-  execFileSync('jj', ['git', 'init', '--colocate', source], { stdio: 'ignore' });
+  initGitRepo(source);
   return {
     source,
     config: {
@@ -38,7 +51,7 @@ function insertWorkspace(overrides = {}) {
     pr_id: overrides.pr_id ?? null,
     name: overrides.name ?? 'test-workspace',
     path: overrides.path ?? '/path/that/does/not/exist',
-    bookmark: 'feature',
+    branch: 'feature',
     repo: overrides.repo ?? null,
     status: overrides.status ?? 'active',
     operation_state: overrides.operation_state ?? 'ready',
@@ -51,7 +64,7 @@ function insertWorkspace(overrides = {}) {
   getDb()
     .prepare(
       `INSERT INTO workspaces
-        (id, pr_id, name, path, bookmark, repo, status, operation_state, operation_step,
+        (id, pr_id, name, path, branch, repo, status, operation_state, operation_step,
          operation_error, created_at, destroyed_at, operation_updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
@@ -60,7 +73,7 @@ function insertWorkspace(overrides = {}) {
       workspace.pr_id,
       workspace.name,
       workspace.path,
-      workspace.bookmark,
+      workspace.branch,
       workspace.repo,
       workspace.status,
       workspace.operation_state,
@@ -120,13 +133,13 @@ test('destroying an already-complete workspace is idempotent', async () => {
   );
 });
 
-test('concurrent scratch creation rejects a duplicate repo and bookmark claim', async () => {
+test('concurrent scratch creation rejects a duplicate repo and branch claim', async () => {
   initDb(':memory:');
   const { config } = createScratchConfig();
 
   const results = await Promise.allSettled([
-    createScratchWorkspace('example/project', 'feature-race', config, { startRevision: '@' }),
-    createScratchWorkspace('example/project', 'feature-race', config, { startRevision: '@' }),
+    createScratchWorkspace('example/project', 'feature-race', config, { startRevision: 'refs/remotes/origin/main' }),
+    createScratchWorkspace('example/project', 'feature-race', config, { startRevision: 'refs/remotes/origin/main' }),
   ]);
   const fulfilled = results.filter((result) => result.status === 'fulfilled');
   const rejected = results.filter((result) => result.status === 'rejected');
@@ -144,10 +157,10 @@ test('destroy waits for an in-flight create of the same workspace', async () => 
   const { source, config } = createScratchConfig();
 
   const creation = createScratchWorkspace('example/project', 'feature-create-destroy', config, {
-    startRevision: '@',
+    startRevision: 'refs/remotes/origin/main',
   });
   const reserved = getDb()
-    .prepare("SELECT id FROM workspaces WHERE repo = ? AND bookmark = ? AND operation_state = 'creating'")
+    .prepare("SELECT id FROM workspaces WHERE repo = ? AND branch = ? AND operation_state = 'creating'")
     .get('example/project', 'feature-create-destroy');
   assert.ok(reserved);
 
@@ -166,7 +179,7 @@ test('destroy waits for an in-flight create of the same workspace', async () => 
   );
   assert.deepEqual(getDb().prepare('SELECT * FROM workspace_claims').all(), []);
   assert.doesNotMatch(
-    execFileSync('jj', ['workspace', 'list', '-R', source], { encoding: 'utf8' }),
+    execFileSync('git', ['worktree', 'list'], { cwd: source, encoding: 'utf8' }),
     /scratch-feature-create-destroy/,
   );
 });

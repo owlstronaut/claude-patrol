@@ -48,10 +48,10 @@ export function ScratchWorkspaces({ scratchWorkspaces, workspaceStates, dismisse
                   <td className={styles.cell}>
                     <a
                       href={`#/workspace/${ws.id}`}
-                      className={styles.bookmark}
+                      className={styles.branch}
                       onClick={(event) => event.stopPropagation()}
                     >
-                      {ws.bookmark}
+                      {ws.branch}
                     </a>
                   </td>
                   <td className={styles.cell}>{ws.repo && <span className={styles.repoTag}>{ws.repo}</span>}</td>

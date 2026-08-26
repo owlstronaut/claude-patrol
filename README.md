@@ -1,13 +1,13 @@
 # Claude Patrol
 
-A self-hosted coding dashboard that watches GitHub pull requests and starts isolated jj workspaces from pull requests, project references, or repository branches. Interactive sessions can use Claude Code or Codex.
+A self-hosted coding dashboard that watches GitHub pull requests and starts isolated git worktrees from pull requests, project references, or repository branches. Interactive sessions can use Claude Code or Codex.
 
 ![Claude Patrol dashboard](screenshots/dashboard.png)
 
 ## What it does
 
 - **PR dashboard** - live-updating table of open PRs across your GitHub orgs and repos. Filter by org, repo, CI status, review state, merge readiness, draft. Quick filters for "Merge Ready", "Review Ready", and "Needs Work".
-- **Workspace management** - create jj workspaces for any PR with one click. Supports per-repo symlinks, init commands, and Claude memory linking.
+- **Workspace management** - create git worktrees for any PR with one click. Supports per-repo symlinks, init commands, and Claude memory linking.
 - **Reference-based work items** - resolve one opaque project reference into one or more repository workspaces and work across them from one terminal rooted at a non-repository parent.
 - **Terminal sessions** - embedded xterm.js terminals running Claude Code or Codex inside tmux. Multiple browser tabs or a native Ghostty window can share the same session. Pop out to Ghostty at any time.
 - **Session transcripts** - Claude Code JSONL transcripts are archived when sessions end. View past conversations with searchable, structured output (tool calls, thinking blocks, results).
@@ -22,7 +22,8 @@ You'll need these installed and on your PATH:
 - **Node.js** >= 22 (uses `node:sqlite` built-in)
 - **pnpm** - package manager
 - **gh** - GitHub CLI, authenticated (`gh auth login`), when GitHub polling is configured
-- **jj** - Jujutsu version control
+- **git** - version control
+- **gh-stack** - `gh` extension backing the stacked-branch rebase workflow (`gh extension install github/gh-stack`)
 - **claude** - Claude Code CLI, when Claude sessions or resolution are enabled
 - **codex** - Codex CLI, when Codex sessions, resolution, or reviews are enabled
 - **tmux** - terminal multiplexer (sessions survive server restarts)
@@ -101,14 +102,14 @@ Running without a subcommand defaults to `start`.
 | `security.allowed_origins` | Additional browser origins allowed to call the API. Same-origin requests are always allowed. |
 | `security.auth_token` | Token for non-loopback access. Prefer the `CLAUDE_PATROL_AUTH_TOKEN` environment variable. |
 | `automation.concurrency` | Maximum number of rule action chains running concurrently (default 2). |
-| `workspace_base_path` | Base directory for jj workspaces |
-| `work_dir` | Base directory where your repos are cloned. Expects a `<org>/<repo>` structure (e.g. `~/work/acme/api-server`, `~/work/acme/webapp`). When creating jj workspaces, Claude Patrol resolves the main repo at `<work_dir>/<org>/<repo>`. |
+| `workspace_base_path` | Base directory for git worktrees |
+| `work_dir` | Base directory where your repos are cloned. Expects a `<org>/<repo>` structure (e.g. `~/work/acme/api-server`, `~/work/acme/webapp`). When creating worktrees, Claude Patrol resolves the main repo at `<work_dir>/<org>/<repo>`. |
 | `global_terminal_cwd` | Working directory for the global terminal |
 | `default_session_provider` | Initial session provider, `claude` or `codex`. A provider saved in the browser overrides this default. |
 | `symlink_memory` | Create `.claude/memory` symlinks in workspaces |
 | `repos.<org/repo>.symlinks` | Additional symlinks to create in workspaces |
 | `repos.<org/repo>.initCommands` | Commands to run after workspace creation |
-| `repos.<org/repo>.defaultRevision` | Required starting jj revision for a repository available to Work Items |
+| `repos.<org/repo>.defaultRevision` | Required starting revision for a repository available to Work Items. Must be a fully-qualified remote-tracking ref, e.g. `refs/remotes/origin/main`. |
 | `work_items.repositories` | Candidate `owner/repo` identifiers the resolver may select |
 | `work_items.resolver.provider` | Optional fixed resolver provider, `claude` or `codex`. Omit to use the work item's selected provider. |
 | `work_items.resolver.server` | One read-only HTTP MCP server, with `name`, `transport`, `url`, and `enabled_tools` |
@@ -119,11 +120,11 @@ Binding and security changes require a restart.
 
 ### Reference-based work items
 
-Work Items are independent of any issue tracker. Patrol passes the reference to the configured read-only MCP resolver and accepts only a title, summary, and subset of configured repositories. The resolver cannot select paths, revisions, bookmarks, commands, or Patrol operations.
+Work Items are independent of any issue tracker. Patrol passes the reference to the configured read-only MCP resolver and accepts only a title, summary, and subset of configured repositories. The resolver cannot select paths, revisions, branches, commands, or Patrol operations.
 
 Patrol prepares the selected repository workspaces without starting an agent. When the work item is ready, choose Claude or Codex on its detail page and open a terminal explicitly. The agent starts idle and waits for your first prompt.
 
-Every candidate source repository must already exist as a jj repository below `work_dir`. Patrol does not clone repositories. A minimal configuration using Linear as the instance-specific resolver looks like this:
+Every candidate source repository must already exist as a git repository below `work_dir`. Patrol does not clone repositories. A minimal configuration using Linear as the instance-specific resolver looks like this:
 
 ```json
 {
@@ -277,7 +278,7 @@ A second example using the `mergeable.changed` trigger to auto-rebase a branch w
   "actions": [
     {
       "type": "dispatch_claude",
-      "prompt": "PR {{pr.id}} just transitioned to CONFLICTING. Run `jj git fetch`, then `jj rebase -d {{pr.base_branch}}@origin`. Resolve conflicts via `jj status` and `jj squash`. Run the project's test suite. If tests pass, `jj bookmark set {{pr.branch}} -r @` and `jj git push`. If tests fail, report what failed."
+      "prompt": "PR {{pr.id}} just transitioned to CONFLICTING. If `gh stack view --json` reports a stack, run `gh stack sync`. Otherwise run `git fetch origin {{pr.base_branch}}`, then `git rebase origin/{{pr.base_branch}}`, resolving conflicts with `git status`, edits, `git add`, and `git rebase --continue`. Run the project's test suite. If tests pass, `git push --force-with-lease`. If tests fail, report what failed."
     }
   ],
   "cooldown_minutes": 60
@@ -330,7 +331,7 @@ Fastify server
     |-- Poll coordinator: serialized gh api graphql -> SQLite
     |-- Automation queue: persistent, bounded rule actions
     |-- PTY manager: tmux sessions with node-pty bridge
-    |-- Workspace manager: jj workspace create/destroy
+    |-- Workspace manager: git worktree create/destroy
     |-- Work-item resolver: isolated read-only MCP preflight
     |-- Patrol MCP server: per-session HTTP transport for Claude Code
     |-- Optional Codex client: first-party `codex mcp-server` over stdio

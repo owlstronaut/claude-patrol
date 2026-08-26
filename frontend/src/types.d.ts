@@ -99,7 +99,7 @@ export interface Workspace {
   pr_id: string | null;
   name: string;
   path: string;
-  bookmark: string;
+  branch: string;
   repo: string | null;
   status: 'active' | 'destroyed';
   created_at: string;
@@ -210,7 +210,7 @@ export interface WorkItemRepository {
   state: 'pending' | 'ready' | 'removing' | 'removed' | 'error';
   path: string | null;
   checkout_available: boolean;
-  bookmark: string;
+  branch: string;
   start_revision: string;
   base_commit: string | null;
   warnings: string[];
