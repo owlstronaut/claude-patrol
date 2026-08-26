@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, test } from 'node:test';
 import { closeDb, getDb, initDb } from './db.js';
-import { createScratchWorkspace, destroyWorkspace, inspectWorkspaceState } from './workspace.js';
+import { createScratchWorkspace, createWorkspace, destroyWorkspace, inspectWorkspaceState } from './workspace.js';
 
 const temporaryDirectories = [];
 
@@ -182,4 +182,54 @@ test('destroy waits for an in-flight create of the same workspace', async () => 
     execFileSync('git', ['worktree', 'list'], { cwd: source, encoding: 'utf8' }),
     /scratch-feature-create-destroy/,
   );
+});
+
+test('a PR workspace fetches from the remote hosting the PR repo, not always origin', async () => {
+  initDb(':memory:');
+  const root = mkdtempSync(join(tmpdir(), 'patrol-fork-remote-'));
+  temporaryDirectories.push(root);
+  const source = join(root, 'sources', 'acme', 'widgets');
+  mkdirSync(source, { recursive: true });
+  initGitRepo(source);
+  const git = (args, cwd = source) => execFileSync('git', args, { cwd, stdio: 'ignore' });
+
+  // Two bare remotes. Only the canonical one's URL ends in the PR's org/repo.
+  const canonical = join(root, 'remotes', 'acme', 'widgets.git');
+  const forkRemote = join(root, 'remotes', 'myfork', 'widgets.git');
+  mkdirSync(dirname(canonical), { recursive: true });
+  mkdirSync(dirname(forkRemote), { recursive: true });
+  git(['clone', '--bare', '-q', source, canonical], root);
+  git(['clone', '--bare', '-q', source, forkRemote], root);
+
+  // The PR branch exists only on the canonical remote.
+  git(['branch', 'feature/pr-branch']);
+  git(['push', '-q', canonical, 'feature/pr-branch']);
+  git(['branch', '-D', 'feature/pr-branch']);
+  git(['remote', 'add', 'origin', forkRemote]);
+  git(['remote', 'add', 'upstream', canonical]);
+
+  const now = new Date().toISOString();
+  getDb()
+    .prepare(
+      `INSERT INTO prs
+        (id, number, title, repo, org, author, url, branch, created_at, updated_at, synced_at)
+       VALUES ('acme/widgets#7', 7, 'Fork PR', 'widgets', 'acme', 'octocat',
+               'https://example.test/pr/7', 'feature/pr-branch', ?, ?, ?)`,
+    )
+    .run(now, now, now);
+
+  const config = {
+    work_dir: join(root, 'sources'),
+    workspace_base_path: join(root, 'workspaces'),
+    symlink_memory: false,
+    repos: { 'acme/widgets': {} },
+  };
+
+  // Fetching from `origin` would fail: the branch is not on the fork.
+  const workspace = await createWorkspace('acme/widgets#7', config);
+  assert.equal(workspace.operation_state, 'ready');
+  assert.equal(workspace.branch, 'feature/pr-branch');
+  assert.match(execFileSync('git', ['worktree', 'list'], { cwd: source, encoding: 'utf8' }), /widgets\/7/);
+
+  await destroyWorkspace(workspace.id, config);
 });

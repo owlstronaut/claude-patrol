@@ -109,7 +109,7 @@ Running without a subcommand defaults to `start`.
 | `symlink_memory` | Create `.claude/memory` symlinks in workspaces |
 | `repos.<org/repo>.symlinks` | Additional symlinks to create in workspaces |
 | `repos.<org/repo>.initCommands` | Commands to run after workspace creation |
-| `repos.<org/repo>.defaultRevision` | Required starting revision for a repository available to Work Items. Must be a fully-qualified remote-tracking ref, e.g. `refs/remotes/origin/main`. |
+| `repos.<org/repo>.defaultRevision` | Required starting revision for a repository available to Work Items. Must be a fully-qualified remote-tracking ref under any remote, e.g. `refs/remotes/origin/main` or, in a fork checkout, `refs/remotes/upstream/main`. Patrol resolves it without fetching, so the ref is only as fresh as your last `git fetch`. |
 | `work_items.repositories` | Candidate `owner/repo` identifiers the resolver may select |
 | `work_items.resolver.provider` | Optional fixed resolver provider, `claude` or `codex`. Omit to use the work item's selected provider. |
 | `work_items.resolver.server` | One read-only HTTP MCP server, with `name`, `transport`, `url`, and `enabled_tools` |

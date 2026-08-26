@@ -1,5 +1,15 @@
 # Build Log
 
+## 2026-08-26 - Stop assuming `origin` is the canonical remote
+
+Two follow-ups to the git swap, both found while configuring a real multi-repo setup where one checkout (`chainguard-dev/mono`) is a fork: `origin` is the personal fork and the canonical repo sits under `upstream`.
+
+`defaultRevision` validation required the ref to start with `refs/remotes/origin/`, so `refs/remotes/upstream/main` was rejected. The rule's purpose is to reject short forms that are ambiguous with local branches, and any `refs/remotes/<remote>/<branch>` satisfies that, so it now accepts a ref under any remote. Without this there was no way to express "start from the canonical repo" in a fork checkout - the only alternative was branching from a fork's `main` that happened to be five weeks stale.
+
+PR workspace creation hard-coded `git fetch origin <branch>`, which fails with `couldn't find remote ref` when the PR branch only exists on the canonical remote. The old jj call passed a bare revision and never named a remote, so this was a regression introduced by the swap rather than a pre-existing limitation. `remoteForRepo` now picks the remote whose URL ends in the PR's `org/repo` (matching both scp-style and URL-style remotes) and falls back to `origin`. The worktree starts from `FETCH_HEAD` rather than `<remote>/<branch>`, because a single-branch fetch only updates the remote-tracking ref opportunistically.
+
+Still unhandled: a PR from a third-party fork, whose branch is on neither remote. `prs.is_fork` records this, but nothing acts on it.
+
 ## 2026-08-26 - Replace jj with plain git worktrees and gh-stack
 
 Patrol's whole workspace layer was built on Jujutsu: `jj workspace add/forget` for checkouts, `jj bookmark` for branch pointers, and jj revsets for the review range. jj is no longer part of the toolchain, so every one of those call sites is now git, and the stacked-branch workflow that jj's automatic rebasing used to cover is delegated to the `gh-stack` GitHub CLI extension.

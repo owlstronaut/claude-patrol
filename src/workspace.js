@@ -26,6 +26,33 @@ function ensureRepoExists(repoPath) {
 }
 
 /**
+ * Find the remote whose URL points at `org/repo`, falling back to `origin`.
+ * In a fork checkout `origin` is the fork and the canonical repo sits under a
+ * second remote, so a PR branch is only fetchable from the latter.
+ * @param {string} repoPath
+ * @param {string} org
+ * @param {string} repo
+ * @returns {Promise<string>} remote name
+ */
+async function remoteForRepo(repoPath, org, repo) {
+  let stdout;
+  try {
+    ({ stdout } = await execFile('git', ['remote', '-v'], { cwd: repoPath, encoding: 'utf8' }));
+  } catch {
+    return 'origin';
+  }
+  const wanted = `${org}/${repo}`.toLowerCase();
+  for (const line of String(stdout).split('\n')) {
+    const [name, url] = line.trim().split(/\s+/);
+    if (!name || !url) continue;
+    // Accept both scp-style (git@host:org/repo) and URL-style (https://host/org/repo) remotes.
+    const normalized = url.toLowerCase().replace(/\.git$/, '');
+    if (normalized.endsWith(`/${wanted}`) || normalized.endsWith(`:${wanted}`)) return name;
+  }
+  return 'origin';
+}
+
+/**
  * Remove a git worktree registered against mainRepoPath, if one is present.
  * Checks `git worktree list` first instead of pattern-matching git's error
  * text, so a worktree that's already gone (or was never registered) is a
@@ -354,10 +381,13 @@ export async function createWorkspace(prId, config) {
           updateWorkspaceOperation(id, 'creating', 'create:verify_repository');
           ensureRepoExists(mainRepoPath);
           updateWorkspaceOperation(id, 'creating', 'create:fetch');
-          await execFile('git', ['fetch', 'origin', pr.branch], { cwd: mainRepoPath });
+          const remote = await remoteForRepo(mainRepoPath, pr.org, pr.repo);
+          await execFile('git', ['fetch', remote, pr.branch], { cwd: mainRepoPath });
           mkdirSync(dirname(workspacePath), { recursive: true });
           updateWorkspaceOperation(id, 'creating', 'create:add_workspace');
-          await execFile('git', ['worktree', 'add', '-b', pr.branch, workspacePath, `origin/${pr.branch}`], {
+          // FETCH_HEAD is exactly what the fetch above retrieved; the remote-tracking
+          // ref is only updated opportunistically for a single-branch fetch.
+          await execFile('git', ['worktree', 'add', '-b', pr.branch, workspacePath, 'FETCH_HEAD'], {
             cwd: mainRepoPath,
           });
           updateWorkspaceOperation(id, 'creating', 'create:post_setup');

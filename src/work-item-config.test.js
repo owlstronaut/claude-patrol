@@ -66,6 +66,20 @@ test('default_session_provider accepts supported providers and rejects other val
   assert.throws(() => parseConfig(workItemConfig({ default_session_provider: 'other' })), /default_session_provider/);
 });
 
+test('defaultRevision accepts any remote-tracking ref and rejects ambiguous short forms', () => {
+  for (const revision of ['refs/remotes/origin/main', 'refs/remotes/upstream/main', 'refs/remotes/fork/release/v2']) {
+    const parsed = parseConfig({ repos: { 'acme/widgets': { defaultRevision: revision } } });
+    assert.equal(parsed.repos['acme/widgets'].defaultRevision, revision);
+  }
+  for (const revision of ['main', 'origin/main', 'main@origin', 'refs/heads/main', 'refs/remotes/origin']) {
+    assert.throws(
+      () => parseConfig({ repos: { 'acme/widgets': { defaultRevision: revision } } }),
+      /fully-qualified remote-tracking ref/,
+      `expected ${revision} to be rejected`,
+    );
+  }
+});
+
 test('work-item configuration rejects ambiguous repositories and unsafe resolver settings', () => {
   assert.throws(
     () =>
